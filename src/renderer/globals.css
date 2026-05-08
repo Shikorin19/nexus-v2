@@ -1,0 +1,103 @@
+@import "tailwindcss";
+
+/* ── Scene CSS custom properties ────────────────────────────────────────────
+   @property déclare le type → le navigateur peut interpoler la valeur.
+   inherits: true = tous les descendants héritent de la valeur en transition.
+   ──────────────────────────────────────────────────────────────────────── */
+
+@property --scene-accent {
+  syntax       : '<color>';
+  inherits     : true;
+  initial-value: #00d4ff;
+}
+
+@property --scene-accent-dim {
+  syntax       : '<color>';
+  inherits     : true;
+  initial-value: rgba(0, 212, 255, 0.40);
+}
+
+@property --scene-accent-ghost {
+  syntax       : '<color>';
+  inherits     : true;
+  initial-value: rgba(0, 212, 255, 0.07);
+}
+
+/* Valeurs initiales + transition 1.2s sur :root */
+:root {
+  --scene-accent        : #00d4ff;
+  --scene-accent-dim    : rgba(0, 212, 255, 0.40);
+  --scene-accent-ghost  : rgba(0, 212, 255, 0.07);
+  --scene-bg-tint       : rgba(0, 0, 0, 0);
+  --scene-cluster-tint  : #4da6ff;
+  --scene-speed         : 1;
+  --scene-glow          : 1;
+  --scene-widget-opacity: 1;
+
+  /* Transitions cinématiques sur les propriétés typées */
+  transition:
+    --scene-accent       1.2s cubic-bezier(0.16, 1, 0.3, 1),
+    --scene-accent-dim   1.2s cubic-bezier(0.16, 1, 0.3, 1),
+    --scene-accent-ghost 1.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@theme {
+  /* NEXUS dark color palette */
+  --color-background: hsl(222, 47%, 7%);
+  --color-foreground: hsl(213, 31%, 91%);
+
+  --color-card: hsl(222, 47%, 11%);
+  --color-card-foreground: hsl(213, 31%, 91%);
+
+  --color-popover: hsl(222, 47%, 11%);
+  --color-popover-foreground: hsl(213, 31%, 91%);
+
+  --color-primary: hsl(186, 100%, 50%);
+  --color-primary-foreground: hsl(222, 47%, 7%);
+
+  --color-secondary: hsl(270, 100%, 57%);
+  --color-secondary-foreground: hsl(213, 31%, 91%);
+
+  --color-muted: hsl(223, 47%, 18%);
+  --color-muted-foreground: hsl(215, 20%, 55%);
+
+  --color-accent: hsl(223, 47%, 18%);
+  --color-accent-foreground: hsl(213, 31%, 91%);
+
+  --color-destructive: hsl(335, 100%, 43%);
+  --color-destructive-foreground: hsl(213, 31%, 91%);
+
+  --color-border: hsl(223, 47%, 18%);
+  --color-input: hsl(223, 47%, 18%);
+  --color-ring: hsl(186, 100%, 50%);
+
+  --radius: 0.5rem;
+
+  /* Couleur étoile — tirée de la palette du cluster (0x4da6ff) */
+  --star-blue: #4da6ff;
+  --color-star-blue: #4da6ff;
+
+  /* NEXUS neon accents */
+  --color-neon-cyan: #00f5ff;
+  --color-neon-purple: #b026ff;
+  --color-neon-pink: #ff006e;
+  --color-neon-green: #39ff14;
+  --color-neon-yellow: #ffd60a;
+
+  /* Typography */
+  --font-sans: 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    font-feature-settings: "rlig" 1, "calt" 1;
+    -webkit-font-smoothing: antialiased;
+  }
+}

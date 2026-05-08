@@ -1,0 +1,13 @@
+{
+  "id": "detente",
+  "name": "Détente / Soirée",
+  "icon": "moon",
+  "color": "#94a3b8",
+  "actions": {
+    "launch_apps": ["spotify.exe"],
+    "volume": { "master": 50 },
+    "brightness": 30,
+    "tts_message": "Mode détente activé. Bonne soirée."
+  },
+  "schedule": { "auto_activate": [], "auto_deactivate": [] }
+}

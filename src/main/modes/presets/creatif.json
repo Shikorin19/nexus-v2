@@ -1,0 +1,13 @@
+{
+  "id": "creatif",
+  "name": "Créatif",
+  "icon": "palette",
+  "color": "#ffd60a",
+  "actions": {
+    "volume": { "master": 40 },
+    "brightness": 90,
+    "pomodoro_preset": "90/15",
+    "tts_message": "Mode créatif activé. Laisse parler ton imagination."
+  },
+  "schedule": { "auto_activate": [], "auto_deactivate": [] }
+}

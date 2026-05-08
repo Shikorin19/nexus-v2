@@ -1,0 +1,12 @@
+{
+  "id": "lecture",
+  "name": "Lecture",
+  "icon": "book",
+  "color": "#f0f4f8",
+  "actions": {
+    "volume": { "master": 20 },
+    "brightness": 50,
+    "tts_message": "Mode lecture activé. Bonne lecture."
+  },
+  "schedule": { "auto_activate": [], "auto_deactivate": [] }
+}

@@ -1,0 +1,13 @@
+{
+  "id": "sport",
+  "name": "Sport",
+  "icon": "dumbbell",
+  "color": "#39ff14",
+  "actions": {
+    "launch_apps": ["spotify.exe"],
+    "volume": { "master": 80 },
+    "brightness": 100,
+    "tts_message": "Mode sport activé. C'est parti, tu vas tout déchirer!"
+  },
+  "schedule": { "auto_activate": [], "auto_deactivate": [] }
+}

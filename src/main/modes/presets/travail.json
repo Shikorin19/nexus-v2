@@ -1,0 +1,15 @@
+{
+  "id": "travail",
+  "name": "Travail / Focus",
+  "icon": "target",
+  "color": "#00f5ff",
+  "actions": {
+    "launch_apps": ["code.exe", "chrome.exe"],
+    "close_apps": ["steam.exe"],
+    "volume": { "master": 30 },
+    "brightness": 75,
+    "pomodoro_preset": "25/5",
+    "tts_message": "Mode travail activé. Concentration maximale."
+  },
+  "schedule": { "auto_activate": [], "auto_deactivate": [] }
+}

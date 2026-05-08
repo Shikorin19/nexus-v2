@@ -1,0 +1,15 @@
+{
+  "id": "gaming",
+  "name": "Gaming",
+  "icon": "gamepad-2",
+  "color": "#ff006e",
+  "actions": {
+    "launch_apps": ["steam.exe", "discord.exe"],
+    "close_apps": ["code.exe"],
+    "volume": { "master": 80 },
+    "brightness": 100,
+    "power_plan": "ultimate-performance",
+    "tts_message": "Mode gaming activé. Bonne partie."
+  },
+  "schedule": { "auto_activate": [], "auto_deactivate": [] }
+}

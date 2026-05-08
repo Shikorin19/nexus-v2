@@ -1,0 +1,15 @@
+{
+  "id": "etude",
+  "name": "Étude / Concentration",
+  "icon": "book-open",
+  "color": "#b026ff",
+  "actions": {
+    "launch_apps": ["chrome.exe"],
+    "close_apps": ["steam.exe", "discord.exe"],
+    "volume": { "master": 25 },
+    "brightness": 60,
+    "pomodoro_preset": "50/10",
+    "tts_message": "Mode étude activé. Bonne session d'apprentissage."
+  },
+  "schedule": { "auto_activate": [], "auto_deactivate": [] }
+}

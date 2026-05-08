@@ -1,0 +1,50 @@
+/* ================================================================
+   NEXUS — Design System Variables
+   Spacing system: 4px base grid (4, 8, 12, 16, 24, 32, 48, 64, 96)
+   ================================================================ */
+
+:root {
+  /* ── Couleurs ── */
+  --bg-deep:          #000308;
+  --bg-surface:       #0a0f1a;
+  --bg-card:          rgba(20, 25, 40, 0.5);
+  --star-blue:        #7eb8ff;
+  --star-blue-bright: #a8d4ff;
+  --accent-cyan:      #00f5ff;
+  --accent-violet:    #b026ff;
+  --accent-green:     #39ff14;
+  --accent-pink:      #ff006e;
+  --accent-yellow:    #ffd60a;
+  --text-primary:     #e8edf5;
+  --text-secondary:   #8a94a6;
+  --border-subtle:    rgba(255, 255, 255, 0.08);
+  --border-focus:     rgba(0, 245, 255, 0.4);
+
+  /* ── Espacements (grille 4px stricte) ── */
+  --sp-1:  4px;
+  --sp-2:  8px;
+  --sp-3:  12px;
+  --sp-4:  16px;
+  --sp-5:  24px;
+  --sp-6:  32px;
+  --sp-7:  48px;
+  --sp-8:  64px;
+  --sp-9:  96px;
+
+  /* ── Ombres / glow ── */
+  --glow-cyan:   0 0 20px rgba(0, 245, 255, 0.3);
+  --glow-violet: 0 0 25px rgba(176, 38, 255, 0.4);
+  --glow-pink:   0 0 20px rgba(255, 0, 110, 0.3);
+
+  /* ── Transitions ── */
+  --ease-smooth:    cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-cinematic: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-micro:  200ms;
+  --dur-normal: 400ms;
+  --dur-view:   600ms;
+
+  /* ── Layout ── */
+  --titlebar-h: 36px;
+  --nav-w:      56px;
+  --dock-w:     56px;
+}

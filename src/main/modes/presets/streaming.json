@@ -1,0 +1,14 @@
+{
+  "id": "streaming",
+  "name": "Streaming",
+  "icon": "radio",
+  "color": "#b026ff",
+  "actions": {
+    "launch_apps": ["obs64.exe", "discord.exe"],
+    "volume": { "master": 60 },
+    "brightness": 100,
+    "power_plan": "ultimate-performance",
+    "tts_message": "Mode streaming activé. Bonne émission!"
+  },
+  "schedule": { "auto_activate": [], "auto_deactivate": [] }
+}
