@@ -1,3 +1,8 @@
+// Polyfill File global pour groq-sdk (requis sur Node < 20)
+if (typeof globalThis.File === 'undefined') {
+  try { globalThis.File = require('node:buffer').File; } catch {}
+}
+
 const path = require('path');
 const fs = require('fs');
 const os = require('os');

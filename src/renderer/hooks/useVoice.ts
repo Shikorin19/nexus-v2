@@ -1,12 +1,12 @@
 /**
  * NEXUS — useVoice
  *
- * Pipeline complet :
+ * Pipeline :
  *   Mic → VAD (silence 1.2s) → STT (Groq Whisper) → callback(text)
- *   + TTS (msedge-tts via IPC) → Web Audio amplitude → cluster speaking
+ *   + TTS (msedge-tts via IPC) → blob URL + Web Audio amplitude → cluster speaking
  *
- * Identique à la logique V1 index.html (startListening / TTSSpeaker)
- * portée en hook React propre.
+ * TTS utilise l'approche V1 : blob URL + <audio> + createMediaElementSource
+ * pour garantir la compatibilité Electron.
  */
 
 import { useState, useRef, useEffect, useCallback } from 'react';
@@ -14,8 +14,8 @@ import { useClusterStore } from '../components/cluster/useClusterStore';
 
 // ─── Config VAD (identique V1) ────────────────────────────────────────────────
 const VAD_FFT_SIZE  = 512;
-const VAD_THRESHOLD = 10;    // round(30 - 0.8 * 25) comme V1 sensitivity=0.8
-const SILENCE_MS    = 1200;  // ms de silence avant auto-stop
+const VAD_THRESHOLD = 10;    // round(30 - 0.8 * 25) = 10, sensitivity=0.8 V1
+const SILENCE_MS    = 1200;  // ms silence avant auto-stop
 
 // ─── Types preload ────────────────────────────────────────────────────────────
 interface TTSResult {
@@ -48,22 +48,23 @@ export function useVoice() {
   const { setAmplitude, setClusterState } = useClusterStore();
 
   // ── Mic / VAD refs ───────────────────────────────────────────────────────
-  const streamRef          = useRef<MediaStream | null>(null);
-  const recorderRef        = useRef<MediaRecorder | null>(null);
-  const chunksRef          = useRef<Blob[]>([]);
-  const vadCtxRef          = useRef<AudioContext | null>(null);
-  const vadRafRef          = useRef<number>(0);
-  const lastSpeechRef      = useRef<number>(0);
-  const vadActiveRef       = useRef(false);
+  const streamRef           = useRef<MediaStream | null>(null);
+  const recorderRef         = useRef<MediaRecorder | null>(null);
+  const chunksRef           = useRef<Blob[]>([]);
+  const vadCtxRef           = useRef<AudioContext | null>(null);
+  const vadRafRef           = useRef<number>(0);
+  const lastSpeechRef       = useRef<number>(0);
+  const vadActiveRef        = useRef(false);
   const shouldTranscribeRef = useRef(false);
-  const onTranscribeRef    = useRef<((text: string) => void) | null>(null);
+  const onTranscribeRef     = useRef<((text: string) => void) | null>(null);
 
   // ── TTS refs ─────────────────────────────────────────────────────────────
+  const audioElRef     = useRef<HTMLAudioElement | null>(null);
   const audioCtxRef    = useRef<AudioContext | null>(null);
   const ampAnalyserRef = useRef<AnalyserNode | null>(null);
   const ampRafRef      = useRef<number>(0);
-  const sourceNodeRef  = useRef<AudioBufferSourceNode | null>(null);
-  const ttsCleanedRef  = useRef(false);
+  const blobUrlRef     = useRef<string | null>(null);
+  const ttsResolveRef  = useRef<(() => void) | null>(null);  // pour résoudre depuis stop
 
   // ─────────────────────────────────────────────────────────────────────────
   // VAD
@@ -76,7 +77,7 @@ export function useVoice() {
     analyser.fftSize = VAD_FFT_SIZE;
     source.connect(analyser);
 
-    vadCtxRef.current  = ctx;
+    vadCtxRef.current    = ctx;
     lastSpeechRef.current = Date.now();
     vadActiveRef.current  = true;
 
@@ -91,7 +92,6 @@ export function useVoice() {
       if (avg > VAD_THRESHOLD) {
         lastSpeechRef.current = Date.now();
       } else if (Date.now() - lastSpeechRef.current > SILENCE_MS) {
-        // Silence détecté → arrêt auto avec transcription
         _stopMic(true);
         return;
       }
@@ -130,15 +130,14 @@ export function useVoice() {
       });
       streamRef.current = stream;
 
-      // Sélection du mimeType (identique V1)
       const mimeType =
         MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' :
-        MediaRecorder.isTypeSupported('audio/webm')             ? 'audio/webm' :
+        MediaRecorder.isTypeSupported('audio/webm')             ? 'audio/webm'             :
         'audio/ogg';
 
       const recorder = new MediaRecorder(stream, { mimeType });
-      recorderRef.current    = recorder;
-      chunksRef.current      = [];
+      recorderRef.current         = recorder;
+      chunksRef.current           = [];
       shouldTranscribeRef.current = false;
 
       recorder.ondataavailable = (e) => {
@@ -153,7 +152,7 @@ export function useVoice() {
         }
       };
 
-      recorder.start(100);  // chunks 100ms comme V1
+      recorder.start(100);
       _startVAD(stream);
 
       setIsListening(true);
@@ -169,7 +168,7 @@ export function useVoice() {
     _stopVAD();
 
     if (recorderRef.current?.state === 'recording') {
-      recorderRef.current.stop();  // → déclenche onstop
+      recorderRef.current.stop();
     }
 
     if (streamRef.current) {
@@ -204,18 +203,19 @@ export function useVoice() {
     onTranscribeRef.current = null;
 
     setIsTranscribing(true);
-    setClusterState('thinking');  // en attente du STT
+    setClusterState('thinking');
 
     try {
       const blob   = new Blob(chunksRef.current, { type: 'audio/webm' });
       const buffer = await blob.arrayBuffer();
       const result = await window.nexus?.voice.transcribe(buffer);
 
+      console.log('[STT] résultat:', result);
+
       if (result?.text?.trim()) {
-        // Ne pas setter idle ici — ChatOverlay reprend la main avec thinking (IA)
         cb(result.text.trim());
       } else {
-        console.warn('[STT] Aucun texte transcrit', result?.error);
+        console.warn('[STT] Aucun texte', result?.error);
         setClusterState('idle');
       }
     } catch (e) {
@@ -228,63 +228,84 @@ export function useVoice() {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // TTS — msedge-tts via IPC + amplitude Web Audio
+  // TTS — approche V1 : blob URL + <audio> + createMediaElementSource
   // ─────────────────────────────────────────────────────────────────────────
 
   const speak = useCallback(async (text: string): Promise<void> => {
     if (!text.trim()) return;
 
-    ttsCleanedRef.current = false;
-
     try {
+      console.log('[TTS] Appel IPC speak…');
       const result = await window.nexus?.voice.speak(text);
-      if (!result?.audio) return;
+      if (!result?.audio) {
+        console.warn('[TTS] Pas de données audio dans la réponse');
+        return;
+      }
+      console.log('[TTS] Audio reçu, longueur base64:', result.audio.length);
 
-      // Décoder le base64 MP3
-      const raw = atob(result.audio);
-      const arr = new Uint8Array(raw.length);
-      for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+      // ── Blob URL (identique V1 _mp3BlobUrl) ─────────────────────────────
+      const bytes = atob(result.audio);
+      const arr   = new Uint8Array(bytes.length);
+      for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+      const blob = new Blob([arr], { type: 'audio/mpeg' });
+      const url  = URL.createObjectURL(blob);
 
-      // Créer AudioContext
+      if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
+      blobUrlRef.current = url;
+
+      // ── Élément audio ────────────────────────────────────────────────────
+      const audio = new Audio(url);
+      audioElRef.current = audio;
+
+      // ── Web Audio API pour amplitude (identique V1) ──────────────────────
       const ctx      = new AudioContext();
+      await ctx.resume();  // déverrouille l'autoplay
+      const source   = ctx.createMediaElementSource(audio);
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 256;
-      analyser.connect(ctx.destination);
+      source.connect(analyser);
+      analyser.connect(ctx.destination);  // ← son vers les haut-parleurs
 
       audioCtxRef.current    = ctx;
       ampAnalyserRef.current = analyser;
 
-      // Décoder le buffer audio
-      const audioBuffer = await ctx.decodeAudioData(arr.buffer);
-
-      const source = ctx.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(analyser);
-      sourceNodeRef.current = source;
-
       setIsSpeaking(true);
 
-      // Loop amplitude → cluster
+      // ── Loop amplitude → cluster ─────────────────────────────────────────
       const data = new Uint8Array(analyser.frequencyBinCount);
       function ampTick() {
         if (!audioCtxRef.current || audioCtxRef.current.state === 'closed') return;
+        if (!audioElRef.current || audioElRef.current.ended) {
+          setAmplitude(0);
+          return;
+        }
         analyser.getByteFrequencyData(data);
         const avg = data.reduce((s, v) => s + v, 0) / data.length;
-        // avg ~20-80 pour de la parole → normalise sur ~60
         setAmplitude(Math.min(1, avg / 60));
         ampRafRef.current = requestAnimationFrame(ampTick);
       }
-      ampRafRef.current = requestAnimationFrame(ampTick);
+      audio.addEventListener('play', () => {
+        ampRafRef.current = requestAnimationFrame(ampTick);
+      });
 
-      source.start(0);
-
-      // Attendre fin naturelle OU interruption (source.stop() fire aussi onended)
+      // ── Attente fin TTS (ou stop) ────────────────────────────────────────
       await new Promise<void>((resolve) => {
-        source.onended = () => resolve();
+        ttsResolveRef.current = resolve;
+        audio.addEventListener('ended', () => { ttsResolveRef.current = null; resolve(); });
+        audio.addEventListener('error', (e) => {
+          console.error('[TTS] Erreur audio element:', e);
+          ttsResolveRef.current = null;
+          resolve();
+        });
+        audio.play().catch((e) => {
+          console.error('[TTS] play() refusé:', e);
+          ttsResolveRef.current = null;
+          resolve();
+        });
       });
 
     } catch (e) {
-      console.error('[TTS] Erreur:', e);
+      console.error('[TTS] Exception:', e);
     } finally {
       _cleanupTTS();
     }
@@ -292,24 +313,29 @@ export function useVoice() {
 
   const stopSpeaking = useCallback(() => {
     window.nexus?.voice.stop();
-    try { sourceNodeRef.current?.stop(); } catch {}
+    audioElRef.current?.pause();
+    ttsResolveRef.current?.();   // résout la promesse speak() pour débloquer
+    ttsResolveRef.current = null;
     _cleanupTTS();
   }, []);
 
   function _cleanupTTS() {
-    if (ttsCleanedRef.current) return;  // éviter double-cleanup
-    ttsCleanedRef.current = true;
-
     cancelAnimationFrame(ampRafRef.current);
     setAmplitude(0);
     setIsSpeaking(false);
-    sourceNodeRef.current = null;
+
+    audioElRef.current = null;
     ampAnalyserRef.current = null;
 
     if (audioCtxRef.current && audioCtxRef.current.state !== 'closed') {
       audioCtxRef.current.close().catch(() => {});
     }
     audioCtxRef.current = null;
+
+    if (blobUrlRef.current) {
+      URL.revokeObjectURL(blobUrlRef.current);
+      blobUrlRef.current = null;
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────────────
