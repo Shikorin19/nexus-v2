@@ -12,6 +12,7 @@
  */
 
 import { useState } from 'react';
+import { AnimatePresence } from 'framer-motion';
 
 import { NeuralCluster }  from './components/cluster/NeuralCluster';
 import { Sidebar }        from './components/sidebar/Sidebar';
@@ -19,8 +20,25 @@ import { WidgetLayer }    from './components/widgets/WidgetLayer';
 import { ChatOverlay }    from './components/chat/ChatOverlay';
 import { SceneManager }   from './components/scenes/SceneManager';
 
+import { HomePage }       from './pages/HomePage';
+import { TasksPage }      from './pages/TasksPage';
+import { HabitsPage }     from './pages/HabitsPage';
+import { StatsPage }      from './pages/StatsPage';
+import { ModesPage }      from './pages/ModesPage';
+import { SettingsPage }   from './pages/SettingsPage';
+
+const PAGES = {
+  home    : HomePage,
+  tasks   : TasksPage,
+  habits  : HabitsPage,
+  stats   : StatsPage,
+  modes   : ModesPage,
+  settings: SettingsPage,
+};
+
 export default function App() {
   const [activePage, setActivePage] = useState('home');
+  const PageComponent = PAGES[activePage] ?? HomePage;
 
   return (
     <>
@@ -33,20 +51,21 @@ export default function App() {
         onNavigate={setActivePage}
       />
 
-      {/* ── z-10 : Contenu principal ───────────────────────────────── */}
-      {/*
-        padding-left: 64px pour laisser la sidebar fermée (overlay).
-        Les vues futures s'insèrent ici.
-      */}
+      {/* ── z-10 : Contenu principal (pages) ──────────────────────── */}
       <div
         id="nexus-ui"
         style={{
-          position   : 'relative',
-          zIndex     : 10,
+          position  : 'relative',
+          zIndex    : 10,
           paddingLeft: '64px',
-          minHeight  : '100vh',
+          minHeight : '100vh',
+          overflowX : 'hidden',
         }}
-      />
+      >
+        <AnimatePresence mode="wait">
+          <PageComponent key={activePage} />
+        </AnimatePresence>
+      </div>
 
       {/* ── z-12 : Widgets flottants holographiques ────────────────── */}
       <WidgetLayer />

@@ -13,8 +13,8 @@ import {
 } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  LayoutDashboard, MessageSquare, ListTodo, Calendar,
-  FolderOpen, Zap, Settings, ChevronsRight, Cpu,
+  LayoutDashboard, ListTodo, CalendarCheck, BarChart3,
+  Layers, Settings, ChevronsRight, Cpu,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
@@ -43,12 +43,11 @@ interface NavItem {
 }
 
 const NAV_MAIN: NavItem[] = [
-  { id: 'home',      label: 'Accueil',       icon: LayoutDashboard },
-  { id: 'chat',      label: 'Chat IA',        icon: MessageSquare   },
-  { id: 'tasks',     label: 'Tâches',         icon: ListTodo        },
-  { id: 'calendar',  label: 'Agenda',         icon: Calendar        },
-  { id: 'files',     label: 'Fichiers',       icon: FolderOpen      },
-  { id: 'modules',   label: 'Modules',        icon: Zap             },
+  { id: 'home',     label: 'Accueil',        icon: LayoutDashboard },
+  { id: 'tasks',    label: 'Tâches',         icon: ListTodo        },
+  { id: 'habits',   label: 'Habitudes',      icon: CalendarCheck   },
+  { id: 'stats',    label: 'Statistiques',   icon: BarChart3       },
+  { id: 'modes',    label: 'Modes',          icon: Layers          },
 ];
 
 const NAV_BOTTOM: NavItem[] = [
