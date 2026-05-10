@@ -454,23 +454,12 @@ export const ChatOverlay: FC = () => {
         });
       } catch {}
 
-      if (isVoice) {
-        // ── Mode voix : TTS puis idle ──────────────────────────────────────
-        await speak(content);           // bloque jusqu'à fin TTS
-        setClusterState('idle');
-        setShowAI(false);
-        setAiText('');
-        isTypingRef.current = false;
-
-      } else {
-        // ── Mode texte : auto-hide 7s ──────────────────────────────────────
-        hideTimerRef.current = setTimeout(() => {
-          setClusterState('idle');
-          setShowAI(false);
-          setAiText('');
-          isTypingRef.current = false;
-        }, 7000);
-      }
+      // ── TTS dans tous les cas (voix ET texte) ─────────────────────────────
+      await speak(content);
+      setClusterState('idle');
+      setShowAI(false);
+      setAiText('');
+      isTypingRef.current = false;
 
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);

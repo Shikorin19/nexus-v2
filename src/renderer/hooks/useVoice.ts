@@ -59,8 +59,6 @@ export function useVoice() {
 
   // ── TTS ──────────────────────────────────────────────────────────────────
   const audioElRef    = useRef<HTMLAudioElement | null>(null);
-  const ttsCtxRef     = useRef<AudioContext | null>(null);
-  const ampRafRef     = useRef<number>(0);
   const stoppedRef    = useRef(false);
   const resolveTTSRef = useRef<(() => void) | null>(null);
 
@@ -69,7 +67,6 @@ export function useVoice() {
   // ─────────────────────────────────────────────────────────────────────────
 
   function _cleanupTTS() {
-    cancelAnimationFrame(ampRafRef.current);
     setAmplitude(0);
     setIsSpeaking(false);
 
@@ -80,12 +77,6 @@ export function useVoice() {
       el.onerror = null;
       el.pause();
       el.src = '';
-    }
-
-    if (ttsCtxRef.current) {
-      const ctx = ttsCtxRef.current;
-      ttsCtxRef.current = null;
-      ctx.close().catch(() => {});
     }
   }
 
@@ -116,38 +107,7 @@ export function useVoice() {
     const el = new Audio(result.fileUrl);
     audioElRef.current = el;
 
-    // Web Audio pour amplitude (V1 exact : createMediaElementSource)
-    try {
-      const ctx      = new AudioContext();
-      ttsCtxRef.current = ctx;
-      const source   = ctx.createMediaElementSource(el);
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = 256;
-      source.connect(analyser);
-      analyser.connect(ctx.destination);
-      await ctx.resume();
-
-      const timeDomainData = new Uint8Array(analyser.fftSize);
-      function _ampLoop() {
-        if (!audioElRef.current) return;
-        analyser.getByteTimeDomainData(timeDomainData);
-        let sum = 0;
-        for (let i = 0; i < timeDomainData.length; i++) {
-          const v = (timeDomainData[i] - 128) / 128;
-          sum += v * v;
-        }
-        setAmplitude(Math.min(1, Math.sqrt(sum / timeDomainData.length) * 6 + 0.1));
-        ampRafRef.current = requestAnimationFrame(_ampLoop);
-      }
-      ampRafRef.current = requestAnimationFrame(_ampLoop);
-      rlog('TTS: Web Audio analyser OK');
-    } catch (e) {
-      rlog('TTS: Web Audio setup failed (amplitude simulée): ' + String(e));
-      // Fallback amplitude simulée si Web Audio échoue
-      ampRafRef.current = setInterval(() => {
-        if (audioElRef.current) setAmplitude(0.3 + Math.random() * 0.45);
-      }, 120) as unknown as number;
-    }
+    // Pas d'amplitude custom — le cluster speaking naturel est déjà bien
 
     el.oncanplay = () => rlog('TTS: canplay');
     el.onplaying = () => { rlog('TTS: playing'); setIsSpeaking(true); };
