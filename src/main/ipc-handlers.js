@@ -244,14 +244,31 @@ function setupIpcHandlers(win) {
   });
 
   // === Weather ===
-  ipcMain.handle('weather-get', async (event, { city }) => {
-    const Store = require('electron-store');
-    const store = new Store();
-    const apiKey = store.get('weatherApiKey', '');
+  ipcMain.handle('weather-get', async (event, { city } = {}) => {
+    const { getSecret }           = require('./secure-store');
     const { getWeather, weatherEmoji } = require('./weather');
-    const data = await getWeather(city || store.get('weatherCity', 'Paris'), apiKey);
+
+    // Clé API : secure-store (keytar → electron-store fallback)
+    const apiKey = await getSecret('weatherApiKey');
+
+    // Ville : argument → electron-store → IP géolocation (dans getWeather)
+    const Store = require('electron-store');
+    const storedCity = new Store().get('weatherCity', '') || '';
+    const resolvedCity = city || storedCity || null;  // null → IP auto-detect
+
+    console.log('[Weather] requête city=%s apiKey=%s', resolvedCity || 'auto', apiKey ? '✓' : '✗');
+
+    const data = await getWeather(resolvedCity, apiKey);
     if (!data.error) data.emoji = weatherEmoji(data.code);
+    console.log('[Weather] résultat:', data.error ? `erreur(${data.error})` : `${data.temp}°C ${data.city}`);
     return data;
+  });
+
+  // === Weather — save API key via secure-store ===
+  ipcMain.handle('weather-set-key', async (event, { apiKey }) => {
+    const { setSecret } = require('./secure-store');
+    await setSecret('weatherApiKey', apiKey || '');
+    return { success: true };
   });
 
   // === Habit heatmap ===

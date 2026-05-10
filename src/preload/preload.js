@@ -94,7 +94,8 @@ contextBridge.exposeInMainWorld('nexus', {
 
   // === Weather ===
   weather: {
-    get: (city) => ipcRenderer.invoke('weather-get', { city }),
+    get   : (city)   => ipcRenderer.invoke('weather-get', { city }),
+    setKey: (apiKey) => ipcRenderer.invoke('weather-set-key', { apiKey }),
   },
 
   // === XP / Gamification ===
