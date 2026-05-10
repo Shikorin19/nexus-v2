@@ -26,8 +26,11 @@ declare const window: Window & typeof globalThis & {
       stop      : () => void;
       transcribe: (buf: ArrayBuffer) => Promise<{ text?: string; error?: string }>;
     };
+    rlog: (msg: string) => void;
   };
 };
+
+const rlog = (msg: string) => { try { window.nexus?.rlog(msg); } catch {} };
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -89,7 +92,6 @@ export function useVoice() {
   const speak = useCallback(async (text: string): Promise<void> => {
     if (!text.trim()) return;
 
-    // Stop précédent (V1 : stop() en début de speak)
     stoppedRef.current = true;
     window.nexus?.voice.stop();
     _cleanupTTS();
@@ -97,55 +99,53 @@ export function useVoice() {
 
     let result: TTSResult | undefined;
     try { result = await window.nexus?.voice.speak(text); }
-    catch (e) { console.error('[TTS] IPC error:', e); return; }
+    catch (e) { rlog('TTS IPC error: ' + String(e)); return; }
 
     if (!result?.audio || stoppedRef.current) {
-      console.warn('[TTS] Pas de données ou stopped');
+      rlog('TTS: pas de données audio ou stopped');
       return;
     }
 
-    // Base64 → Blob URL (V1 _mp3BlobUrl)
-    const bin = atob(result.audio);
-    const buf = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
-    const url = URL.createObjectURL(new Blob([buf], { type: 'audio/mpeg' }));
-    blobUrlRef.current = url;
+    rlog('TTS: audio reçu len=' + result.audio.length + ' stopped=' + stoppedRef.current);
 
-    const el = new Audio(url);
+    // Data URL directe — évite tous les problèmes de blob URL / CORS
+    const dataUrl = `data:audio/mpeg;base64,${result.audio}`;
+
+    const el = new Audio();
     audioElRef.current = el;
-    setIsSpeaking(true);
 
-    // Amplitude simulée 0.3–0.75 @ 120ms pour les visuels cluster
+    el.oncanplay  = () => rlog('TTS: canplay');
+    el.onplaying  = () => rlog('TTS: playing');
+    el.onpause    = () => rlog('TTS: pause t=' + el.currentTime.toFixed(2));
+    el.onended    = () => {
+      rlog('TTS: ended t=' + el.currentTime.toFixed(2));
+      _cleanupTTS();
+      const cb = resolveTTSRef.current; resolveTTSRef.current = null; cb?.();
+    };
+    el.onerror    = () => {
+      rlog('TTS: onerror code=' + (el.error?.code ?? '?') + ' msg=' + (el.error?.message ?? '?'));
+      _cleanupTTS();
+      const cb = resolveTTSRef.current; resolveTTSRef.current = null; cb?.();
+    };
+
+    el.src = dataUrl;
+    el.load();
+
+    setIsSpeaking(true);
     ampTimerRef.current = setInterval(() => {
       if (!stoppedRef.current) setAmplitude(0.3 + Math.random() * 0.45);
     }, 120);
 
-    // Attente fin lecture — résolution via onended/_fire ou stopSpeaking
     await new Promise<void>((resolve) => {
       resolveTTSRef.current = resolve;
-
-      el.onended = () => {
-        console.log('[TTS] ended');
-        _cleanupTTS();
-        const cb = resolveTTSRef.current;
-        resolveTTSRef.current = null;
-        cb?.();
-      };
-
-      el.onerror = () => {
-        console.error('[TTS] audio element error');
-        _cleanupTTS();
-        const cb = resolveTTSRef.current;
-        resolveTTSRef.current = null;
-        cb?.();
-      };
-
-      el.play().catch((e) => {
-        console.error('[TTS] play() refusé:', e);
-        _cleanupTTS();
-        resolveTTSRef.current = null;
-        resolve();
-      });
+      el.play()
+        .then(() => rlog('TTS: play() resolved'))
+        .catch((e) => {
+          rlog('TTS: play() rejected: ' + String(e));
+          _cleanupTTS();
+          resolveTTSRef.current = null;
+          resolve();
+        });
     });
   }, [setAmplitude]);
 

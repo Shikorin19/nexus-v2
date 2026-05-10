@@ -30,6 +30,9 @@ function setupIpcHandlers(win) {
     mainWindow?.webContents.send('ai-stream-done');
   });
 
+  // === Debug renderer → terminal ===
+  ipcMain.on('renderer-log', (event, msg) => console.log('[R]', msg));
+
   // === TTS ===
   ipcMain.handle('tts-speak', async (event, { text, rate, volume }) => {
     console.log('[TTS] tts-speak →', text?.substring(0, 60));

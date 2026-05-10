@@ -29,6 +29,9 @@ contextBridge.exposeInMainWorld('nexus', {
     transcribe: (audioBuffer) => ipcRenderer.invoke('stt-transcribe', audioBuffer),
   },
 
+  // === Debug (logs renderer → terminal CMD) ===
+  rlog: (msg) => ipcRenderer.send('renderer-log', msg),
+
   // === PC Control ===
   pc: {
     setVolume: (level) => ipcRenderer.invoke('pc-volume-set', { level }),
