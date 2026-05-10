@@ -1,29 +1,23 @@
 /**
  * NEXUS — useVoice
  *
- * Port exact de la V1 :
- *   TTSSpeaker  → speak() / stopSpeaking()
- *   startListening / stopListening → VAD + Groq Whisper STT
- *
- * TTS = new Audio(blobUrl) + AudioContext + createMediaElementSource
- *       + getByteTimeDomainData (identique V1 _pollAmp)
- *       + await ctx.resume() AVANT play (identique V1)
- *       + _fire() pattern via resolveTTSRef
+ * STT : VAD (V1 exact) → Groq Whisper
+ * TTS : new Audio(blobUrl).play() — SANS Web Audio API
+ *       (createMediaElementSource coupe le playback sur pages HTTP)
+ *       Amplitude simulée pour les visuels cluster.
  */
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useClusterStore } from '../components/cluster/useClusterStore';
 
-// ─── VAD Config (V1) ─────────────────────────────────────────────────────────
-const VAD_FFT_SIZE  = 512;
-const VAD_THRESHOLD = 10;    // round(30 - 0.8*25) = 10
-const SILENCE_MS    = 1200;
+// ─── Config VAD (V1 exact) ────────────────────────────────────────────────────
+const VAD_FFT_SIZE     = 512;
+const VAD_SENSITIVITY  = 0.8;
+const VAD_THRESHOLD    = Math.round(30 - VAD_SENSITIVITY * 25); // = 10
+const SILENCE_MS       = 1200;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-interface TTSResult {
-  audio : string;
-  words : { word: string; timeMs: number }[];
-}
+interface TTSResult { audio: string; words: { word: string; timeMs: number }[]; }
 
 declare const window: Window & typeof globalThis & {
   nexus?: {
@@ -50,91 +44,65 @@ export function useVoice() {
   const chunksRef           = useRef<Blob[]>([]);
   const vadCtxRef           = useRef<AudioContext | null>(null);
   const vadRafRef           = useRef<number>(0);
-  const lastSpeechRef       = useRef<number>(0);
+  const vadSpeechDetectedRef = useRef(false);  // V1 : vadSpeechDetected
+  const vadLastSpeechRef    = useRef<number>(0);
   const vadActiveRef        = useRef(false);
   const shouldTranscribeRef = useRef(false);
   const onTranscribeRef     = useRef<((text: string) => void) | null>(null);
 
-  // ── TTS (V1 TTSSpeaker) ──────────────────────────────────────────────────
-  const audioElRef     = useRef<HTMLAudioElement | null>(null);
-  const blobUrlRef     = useRef<string | null>(null);
-  const audioCtxRef    = useRef<AudioContext | null>(null);
-  const ampAnalyserRef = useRef<AnalyserNode | null>(null);
-  const ampRafRef      = useRef<number>(0);
-  const stoppedRef     = useRef(false);
-  const resolveTTSRef  = useRef<(() => void) | null>(null); // _fire() V1
+  // ── TTS ──────────────────────────────────────────────────────────────────
+  const audioElRef    = useRef<HTMLAudioElement | null>(null);
+  const blobUrlRef    = useRef<string | null>(null);
+  const ampTimerRef   = useRef<ReturnType<typeof setInterval> | null>(null);
+  const stoppedRef    = useRef(false);
+  const resolveTTSRef = useRef<(() => void) | null>(null);
 
   // ─────────────────────────────────────────────────────────────────────────
-  // TTS — _pollAmp (identique V1 getByteTimeDomainData)
-  // ─────────────────────────────────────────────────────────────────────────
-
-  function _pollAmp() {
-    if (!ampAnalyserRef.current || stoppedRef.current) return;
-    const buf = new Uint8Array(ampAnalyserRef.current.frequencyBinCount);
-    ampAnalyserRef.current.getByteTimeDomainData(buf);
-    let sum = 0;
-    for (const v of buf) sum += Math.abs(v - 128);
-    const amp = (sum / buf.length) / 128;
-    setAmplitude(amp);
-    ampRafRef.current = requestAnimationFrame(_pollAmp);
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // TTS — _cleanup (identique V1 _cleanup)
+  // TTS — _cleanupTTS
+  // Null l'élément EN PREMIER pour éviter la récursion via onended/onerror
   // ─────────────────────────────────────────────────────────────────────────
 
   function _cleanupTTS() {
-    cancelAnimationFrame(ampRafRef.current);
-    ampRafRef.current = 0;
+    if (ampTimerRef.current) { clearInterval(ampTimerRef.current); ampTimerRef.current = null; }
+    setAmplitude(0);
+    setIsSpeaking(false);
 
     if (audioElRef.current) {
-      audioElRef.current.pause();
-      audioElRef.current.src = '';
-      audioElRef.current = null;
+      const el = audioElRef.current;
+      audioElRef.current = null;  // null AVANT tout pour éviter re-entrée
+      el.onended = null;
+      el.onerror = null;
+      el.pause();
+      el.src = '';
     }
     if (blobUrlRef.current) {
       URL.revokeObjectURL(blobUrlRef.current);
       blobUrlRef.current = null;
     }
-    if (ampAnalyserRef.current) {
-      ampAnalyserRef.current.disconnect();
-      ampAnalyserRef.current = null;
-    }
-    if (audioCtxRef.current && audioCtxRef.current.state !== 'closed') {
-      audioCtxRef.current.close().catch(() => {});
-      audioCtxRef.current = null;
-    }
-    setAmplitude(0);
-    setIsSpeaking(false);
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // TTS — speak (port exact V1 TTSSpeaker.speak)
+  // TTS — speak
+  // Lecture directe new Audio(blobUrl).play() — pas de Web Audio API
   // ─────────────────────────────────────────────────────────────────────────
 
   const speak = useCallback(async (text: string): Promise<void> => {
     if (!text.trim()) return;
 
-    // Stop toute instance précédente (V1 : stop() en début de speak)
+    // Stop précédent (V1 : stop() en début de speak)
     stoppedRef.current = true;
     window.nexus?.voice.stop();
     _cleanupTTS();
     stoppedRef.current = false;
 
     let result: TTSResult | undefined;
-    try {
-      result = await window.nexus?.voice.speak(text);
-    } catch (e) {
-      console.error('[TTS] IPC speak error:', e);
-      return;
-    }
+    try { result = await window.nexus?.voice.speak(text); }
+    catch (e) { console.error('[TTS] IPC error:', e); return; }
 
     if (!result?.audio || stoppedRef.current) {
-      console.warn('[TTS] Pas de données audio ou stopped');
+      console.warn('[TTS] Pas de données ou stopped');
       return;
     }
-
-    console.log('[TTS] Audio reçu, base64 length:', result.audio.length);
 
     // Base64 → Blob URL (V1 _mp3BlobUrl)
     const bin = atob(result.audio);
@@ -145,43 +113,33 @@ export function useVoice() {
 
     const el = new Audio(url);
     audioElRef.current = el;
-
-    // AudioContext + AnalyserNode (identique V1)
-    const ctx      = new AudioContext();
-    const analyser = ctx.createAnalyser();
-    analyser.fftSize = 256;
-    const src = ctx.createMediaElementSource(el);
-    src.connect(analyser);
-    analyser.connect(ctx.destination);
-    audioCtxRef.current    = ctx;
-    ampAnalyserRef.current = analyser;
-
-    // play event → _pollAmp (V1 exact)
-    el.addEventListener('play', () => { _pollAmp(); }, { once: true });
-
-    // onended → setAmplitude(0) + cleanup + _fire() (V1 exact)
-    el.onended = () => {
-      setAmplitude(0);
-      _cleanupTTS();
-      const cb = resolveTTSRef.current;
-      resolveTTSRef.current = null;
-      cb?.();
-    };
-    el.onerror = () => {
-      console.error('[TTS] audio element error');
-      _cleanupTTS();
-      const cb = resolveTTSRef.current;
-      resolveTTSRef.current = null;
-      cb?.();
-    };
-
-    // resume AVANT play (V1 : await _ctx.resume().catch(() => {}))
-    await ctx.resume().catch(() => {});
     setIsSpeaking(true);
 
-    // Attente fin TTS via _fire() callback (pattern V1 exact)
+    // Amplitude simulée 0.3–0.75 @ 120ms pour les visuels cluster
+    ampTimerRef.current = setInterval(() => {
+      if (!stoppedRef.current) setAmplitude(0.3 + Math.random() * 0.45);
+    }, 120);
+
+    // Attente fin lecture — résolution via onended/_fire ou stopSpeaking
     await new Promise<void>((resolve) => {
       resolveTTSRef.current = resolve;
+
+      el.onended = () => {
+        console.log('[TTS] ended');
+        _cleanupTTS();
+        const cb = resolveTTSRef.current;
+        resolveTTSRef.current = null;
+        cb?.();
+      };
+
+      el.onerror = () => {
+        console.error('[TTS] audio element error');
+        _cleanupTTS();
+        const cb = resolveTTSRef.current;
+        resolveTTSRef.current = null;
+        cb?.();
+      };
+
       el.play().catch((e) => {
         console.error('[TTS] play() refusé:', e);
         _cleanupTTS();
@@ -192,22 +150,21 @@ export function useVoice() {
   }, [setAmplitude]);
 
   // ─────────────────────────────────────────────────────────────────────────
-  // TTS — stopSpeaking (V1 TTSSpeaker.stop)
+  // TTS — stopSpeaking (V1 TTSSpeaker.stop + _fire)
   // ─────────────────────────────────────────────────────────────────────────
 
   const stopSpeaking = useCallback(() => {
     stoppedRef.current = true;
-    setAmplitude(0);
     window.nexus?.voice.stop();
     _cleanupTTS();
-    // _fire() — résout le Promise await si interrompu
+    // _fire() → résout le Promise await dans speak() si interrompu
     const cb = resolveTTSRef.current;
     resolveTTSRef.current = null;
     cb?.();
-  }, [setAmplitude]);
+  }, []);
 
   // ─────────────────────────────────────────────────────────────────────────
-  // VAD
+  // VAD — identique V1 checkSilence (avec vadSpeechDetected flag)
   // ─────────────────────────────────────────────────────────────────────────
 
   function _startVAD(stream: MediaStream) {
@@ -217,24 +174,37 @@ export function useVoice() {
     analyser.fftSize = VAD_FFT_SIZE;
     source.connect(analyser);
 
-    vadCtxRef.current     = ctx;
-    lastSpeechRef.current = Date.now();
-    vadActiveRef.current  = true;
+    vadCtxRef.current          = ctx;
+    vadActiveRef.current       = true;
+    vadSpeechDetectedRef.current = false;  // V1 : vadSpeechDetected = false
+    vadLastSpeechRef.current   = 0;
 
     const data = new Uint8Array(analyser.frequencyBinCount);
-    function tick() {
+
+    function checkSilence() {
       if (!vadActiveRef.current) return;
+
       analyser.getByteFrequencyData(data);
-      const avg = data.reduce((s, v) => s + v, 0) / data.length;
-      if (avg > VAD_THRESHOLD) {
-        lastSpeechRef.current = Date.now();
-      } else if (Date.now() - lastSpeechRef.current > SILENCE_MS) {
+      let sum = 0;
+      for (let i = 0; i < data.length; i++) sum += data[i];
+      const avgVolume = sum / data.length;
+
+      if (avgVolume > VAD_THRESHOLD) {
+        vadSpeechDetectedRef.current = true;  // V1 : vadSpeechDetected = true
+        vadLastSpeechRef.current     = Date.now();
+      } else if (
+        vadSpeechDetectedRef.current &&                              // V1 : && vadSpeechDetected
+        Date.now() - vadLastSpeechRef.current > SILENCE_MS
+      ) {
+        // Silence suffisant après parole → arrêt + transcription
         _stopMic(true);
         return;
       }
-      vadRafRef.current = requestAnimationFrame(tick);
+
+      vadRafRef.current = requestAnimationFrame(checkSilence);
     }
-    vadRafRef.current = requestAnimationFrame(tick);
+
+    vadRafRef.current = requestAnimationFrame(checkSilence);
   }
 
   function _stopVAD() {
@@ -247,7 +217,7 @@ export function useVoice() {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Microphone
+  // Microphone (V1 startListening exact)
   // ─────────────────────────────────────────────────────────────────────────
 
   const startListening = useCallback(async (onTranscribe: (text: string) => void) => {
@@ -262,28 +232,25 @@ export function useVoice() {
 
       const mimeType =
         MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' :
-        MediaRecorder.isTypeSupported('audio/webm')             ? 'audio/webm'             :
-        'audio/ogg';
+        MediaRecorder.isTypeSupported('audio/webm')             ? 'audio/webm' : 'audio/ogg';
 
       const recorder = new MediaRecorder(stream, { mimeType });
       recorderRef.current         = recorder;
       chunksRef.current           = [];
       shouldTranscribeRef.current = false;
 
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunksRef.current.push(e.data);
-      };
+      recorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
       recorder.onstop = async () => {
         if (shouldTranscribeRef.current) await _transcribe();
         else chunksRef.current = [];
       };
 
-      recorder.start(100);
+      recorder.start();  // V1 : start() sans timeslice
       _startVAD(stream);
       setIsListening(true);
       setClusterState('listening');
     } catch (e) {
-      console.error('[Voice] Micro:', e);
+      console.error('[Voice] Micro refusé:', e);
     }
   }, [isListening, isTranscribing, setClusterState]);
 
@@ -300,7 +267,7 @@ export function useVoice() {
   const stopListening = useCallback(() => { _stopMic(false); }, []);
 
   // ─────────────────────────────────────────────────────────────────────────
-  // STT
+  // STT (V1 onstop exact)
   // ─────────────────────────────────────────────────────────────────────────
 
   async function _transcribe() {
@@ -312,16 +279,21 @@ export function useVoice() {
     setIsTranscribing(true);
     setClusterState('thinking');
     try {
-      const blob   = new Blob(chunksRef.current, { type: 'audio/webm' });
+      const blob   = new Blob(chunksRef.current);
       const buffer = await blob.arrayBuffer();
       const result = await window.nexus?.voice.transcribe(buffer);
-      console.log('[STT] résultat:', result);
-      if (result?.text?.trim()) cb(result.text.trim());
-      else { console.warn('[STT] vide', result?.error); setClusterState('idle'); }
+      if (result?.text?.trim()) {
+        cb(result.text.trim());
+      } else {
+        console.warn('[STT] vide ou erreur:', result?.error);
+        setClusterState('idle');
+      }
     } catch (e) {
-      console.error('[STT] erreur:', e); setClusterState('idle');
+      console.error('[STT] erreur:', e);
+      setClusterState('idle');
     } finally {
-      setIsTranscribing(false); chunksRef.current = [];
+      setIsTranscribing(false);
+      chunksRef.current = [];
     }
   }
 
