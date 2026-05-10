@@ -75,17 +75,13 @@ function convertSchema(schema) {
 // Build Gemini-compatible tool declarations from the tool list
 function getGeminiTools() {
   const { getTools } = require('./tools-list');
-  return [
-    // Google Search grounding — gratuit, temps réel, natif Gemini 2.x
-    { googleSearch: {} },
-    {
-      functionDeclarations: getTools().map(t => ({
-        name: t.name,
-        description: t.description,
-        parameters: convertSchema(t.input_schema),
-      })),
-    },
-  ];
+  return [{
+    functionDeclarations: getTools().map(t => ({
+      name: t.name,
+      description: t.description,
+      parameters: convertSchema(t.input_schema),
+    })),
+  }];
 }
 
 // Convert message array to Gemini history format (all but last)
