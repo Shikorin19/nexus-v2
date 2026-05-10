@@ -59,12 +59,10 @@ export function useVoice() {
   const onTranscribeRef     = useRef<((text: string) => void) | null>(null);
 
   // ── TTS refs ─────────────────────────────────────────────────────────────
-  const audioElRef     = useRef<HTMLAudioElement | null>(null);
-  const audioCtxRef    = useRef<AudioContext | null>(null);
-  const ampAnalyserRef = useRef<AnalyserNode | null>(null);
-  const ampRafRef      = useRef<number>(0);
-  const blobUrlRef     = useRef<string | null>(null);
-  const ttsResolveRef  = useRef<(() => void) | null>(null);  // pour résoudre depuis stop
+  const audioElRef    = useRef<HTMLAudioElement | null>(null);
+  const blobUrlRef    = useRef<string | null>(null);
+  const ttsResolveRef = useRef<(() => void) | null>(null);
+  const ampTimerRef   = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // ─────────────────────────────────────────────────────────────────────────
   // VAD
@@ -228,7 +226,11 @@ export function useVoice() {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // TTS — approche V1 : blob URL + <audio> + createMediaElementSource
+  // TTS — lecture directe (sans Web Audio API)
+  //
+  // createMediaElementSource cause des coupures dans Electron car le
+  // AudioContext prend le contrôle du lecteur.
+  // → On joue le blob directement + amplitude simulée pour le cluster.
   // ─────────────────────────────────────────────────────────────────────────
 
   const speak = useCallback(async (text: string): Promise<void> => {
@@ -238,65 +240,47 @@ export function useVoice() {
       console.log('[TTS] Appel IPC speak…');
       const result = await window.nexus?.voice.speak(text);
       if (!result?.audio) {
-        console.warn('[TTS] Pas de données audio dans la réponse');
+        console.warn('[TTS] Aucune donnée audio reçue');
         return;
       }
-      console.log('[TTS] Audio reçu, longueur base64:', result.audio.length);
+      console.log('[TTS] Audio reçu, base64 length:', result.audio.length);
 
-      // ── Blob URL (identique V1 _mp3BlobUrl) ─────────────────────────────
+      // Base64 → Blob URL
       const bytes = atob(result.audio);
       const arr   = new Uint8Array(bytes.length);
       for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
       const blob = new Blob([arr], { type: 'audio/mpeg' });
       const url  = URL.createObjectURL(blob);
-
       if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
       blobUrlRef.current = url;
 
-      // ── Élément audio ────────────────────────────────────────────────────
       const audio = new Audio(url);
       audioElRef.current = audio;
-
-      // ── Web Audio API pour amplitude (identique V1) ──────────────────────
-      const ctx      = new AudioContext();
-      await ctx.resume();  // déverrouille l'autoplay
-      const source   = ctx.createMediaElementSource(audio);
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = 256;
-      source.connect(analyser);
-      analyser.connect(ctx.destination);  // ← son vers les haut-parleurs
-
-      audioCtxRef.current    = ctx;
-      ampAnalyserRef.current = analyser;
-
       setIsSpeaking(true);
 
-      // ── Loop amplitude → cluster ─────────────────────────────────────────
-      const data = new Uint8Array(analyser.frequencyBinCount);
-      function ampTick() {
-        if (!audioCtxRef.current || audioCtxRef.current.state === 'closed') return;
-        if (!audioElRef.current || audioElRef.current.ended) {
-          setAmplitude(0);
-          return;
-        }
-        analyser.getByteFrequencyData(data);
-        const avg = data.reduce((s, v) => s + v, 0) / data.length;
-        setAmplitude(Math.min(1, avg / 60));
-        ampRafRef.current = requestAnimationFrame(ampTick);
-      }
-      audio.addEventListener('play', () => {
-        ampRafRef.current = requestAnimationFrame(ampTick);
-      });
+      // Amplitude simulée (~0.3-0.75) pour animer le cluster en speaking
+      ampTimerRef.current = setInterval(() => {
+        setAmplitude(0.3 + Math.random() * 0.45);
+      }, 120);
 
-      // ── Attente fin TTS (ou stop) ────────────────────────────────────────
       await new Promise<void>((resolve) => {
         ttsResolveRef.current = resolve;
-        audio.addEventListener('ended', () => { ttsResolveRef.current = null; resolve(); });
-        audio.addEventListener('error', (e) => {
-          console.error('[TTS] Erreur audio element:', e);
+
+        audio.addEventListener('ended', () => {
+          console.log('[TTS] ended');
           ttsResolveRef.current = null;
           resolve();
         });
+        audio.addEventListener('error', (e) => {
+          console.error('[TTS] erreur lecture:', (e as ErrorEvent).message, audio.error);
+          ttsResolveRef.current = null;
+          resolve();
+        });
+        audio.addEventListener('pause', () => {
+          // Ne pas résoudre ici — pause peut être temporaire (ex. barge-in)
+          console.log('[TTS] pause at', audio.currentTime);
+        });
+
         audio.play().catch((e) => {
           console.error('[TTS] play() refusé:', e);
           ttsResolveRef.current = null;
@@ -314,23 +298,19 @@ export function useVoice() {
   const stopSpeaking = useCallback(() => {
     window.nexus?.voice.stop();
     audioElRef.current?.pause();
-    ttsResolveRef.current?.();   // résout la promesse speak() pour débloquer
+    ttsResolveRef.current?.();
     ttsResolveRef.current = null;
     _cleanupTTS();
   }, []);
 
   function _cleanupTTS() {
-    cancelAnimationFrame(ampRafRef.current);
+    if (ampTimerRef.current) {
+      clearInterval(ampTimerRef.current);
+      ampTimerRef.current = null;
+    }
     setAmplitude(0);
     setIsSpeaking(false);
-
     audioElRef.current = null;
-    ampAnalyserRef.current = null;
-
-    if (audioCtxRef.current && audioCtxRef.current.state !== 'closed') {
-      audioCtxRef.current.close().catch(() => {});
-    }
-    audioCtxRef.current = null;
 
     if (blobUrlRef.current) {
       URL.revokeObjectURL(blobUrlRef.current);
