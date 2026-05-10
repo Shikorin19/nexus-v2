@@ -222,6 +222,7 @@ export function useVoice() {
   // ─────────────────────────────────────────────────────────────────────────
 
   const startListening = useCallback(async (onTranscribe: (text: string) => void) => {
+    rlog('[Voice] startListening appelé, isListening=' + isListening + ' isTranscribing=' + isTranscribing);
     if (isListening || isTranscribing) return;
     onTranscribeRef.current = onTranscribe;
 
@@ -251,6 +252,7 @@ export function useVoice() {
       setIsListening(true);
       setClusterState('listening');
     } catch (e) {
+      rlog('[Voice] getUserMedia refusé: ' + String(e));
       console.error('[Voice] Micro refusé:', e);
     }
   }, [isListening, isTranscribing, setClusterState]);

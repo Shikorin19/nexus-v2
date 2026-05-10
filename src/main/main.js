@@ -1,7 +1,7 @@
 // ── Chargement des variables d'environnement (.env) ──────────────────────────
 try { require('dotenv').config(); } catch (_) {}
 
-const { app, BrowserWindow, ipcMain, shell, globalShortcut } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, globalShortcut, session } = require('electron');
 
 // Désactive la politique autoplay Chrome — nécessaire en dev (HTTP origin)
 // V1 n'avait pas ce problème car chargé depuis file://
@@ -27,6 +27,17 @@ app.on('second-instance', () => {
 });
 
 function createWindow() {
+  // ── Permissions micro/caméra pour file:// origin ──────────────────────────
+  // Sans ces handlers, getUserMedia() est silencieusement refusé sur file://
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
+    const allowed = ['media', 'microphone', 'camera', 'audioCapture', 'videoCapture'];
+    callback(allowed.includes(permission));
+  });
+  session.defaultSession.setPermissionCheckHandler((webContents, permission) => {
+    const allowed = ['media', 'microphone', 'camera', 'audioCapture', 'videoCapture'];
+    return allowed.includes(permission);
+  });
+
   mainWindow = new BrowserWindow({
     width : 1400,
     height: 900,
