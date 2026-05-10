@@ -88,12 +88,14 @@ function getGeminiTools() {
 function toGeminiHistory(messages) {
   const history = [];
   for (const m of messages) {
-    if (typeof m.content !== 'string') continue; // skip tool-result arrays
+    if (typeof m.content !== 'string') continue;
     history.push({
-      role: m.role === 'assistant' ? 'model' : 'user',
+      role : m.role === 'assistant' ? 'model' : 'user',
       parts: [{ text: m.content }],
     });
   }
+  // Gemini exige que le premier message soit 'user' — drop les model en tête
+  while (history.length && history[0].role !== 'user') history.shift();
   return history;
 }
 
