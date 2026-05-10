@@ -18,7 +18,7 @@ export default defineConfig({
   base: './',
   build: {
     outDir: path.resolve(__dirname, 'dist/renderer'),
-    emptyOutDir: true,
+    emptyOutDir: false,  // false = pas de rm -rf au rebuild (évite EPERM quand Electron lock les fichiers)
   },
   server: {
     port: 5173,

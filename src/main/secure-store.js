@@ -33,11 +33,11 @@ function tryKeytar() {
   return _keytar;
 }
 
-// ── Fallback : electron-store ────────────────────────────────────────────────
+// ── Fallback : electron-store (store par défaut = même que Settings) ─────────
 
 function getStore() {
   const Store = require('electron-store');
-  return new Store({ name: 'nexus-secrets' });
+  return new Store(); // pas de name → store par défaut "config", identique à SettingsPage
 }
 
 // ── API publique ─────────────────────────────────────────────────────────────
