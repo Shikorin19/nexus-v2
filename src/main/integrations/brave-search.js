@@ -1,8 +1,8 @@
 const axios = require('axios');
 
 async function webSearch(query, apiKey, count = 5) {
-  // Fallback process.env si electron-store est vide
-  const key = apiKey || process.env.BRAVE_SEARCH_API_KEY || process.env.BRAVE_API_KEY || '';
+  // process.env prioritaire sur electron-store (évite les vieilles clés périmées)
+  const key = process.env.BRAVE_SEARCH_API_KEY || process.env.BRAVE_API_KEY || apiKey || '';
   if (!key) return { error: 'no_key', results: [] };
 
   // count doit être un entier entre 1 et 20

@@ -101,10 +101,10 @@ async function executeTool(toolName, args) {
       case 'web_search': {
         const { webSearch } = require('../integrations/brave-search');
         // Fallback process.env si la clé n'est pas encore dans electron-store
-        const apiKey = store.get('braveSearchKey', '')
-          || process.env.BRAVE_SEARCH_API_KEY
+        // process.env en priorité — electron-store en fallback
+        const apiKey = process.env.BRAVE_SEARCH_API_KEY
           || process.env.BRAVE_API_KEY
-          || '';
+          || store.get('braveSearchKey', '');
         const result = await webSearch(args.query, apiKey, args.count || 5);
         if (result.error) return { success: false, error: result.error };
         return {

@@ -283,10 +283,10 @@ function setupIpcHandlers(win) {
   ipcMain.handle('brave-search', async (event, { query, count }) => {
     const Store = require('electron-store');
     const store = new Store();
-    const apiKey = store.get('braveSearchKey', '')
-      || process.env.BRAVE_SEARCH_API_KEY
+    // process.env en priorité — electron-store en fallback
+    const apiKey = process.env.BRAVE_SEARCH_API_KEY
       || process.env.BRAVE_API_KEY
-      || '';
+      || store.get('braveSearchKey', '');
     const { webSearch } = require('./integrations/brave-search');
     return await webSearch(query, apiKey, count || 5);
   });
