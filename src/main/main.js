@@ -39,20 +39,14 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration : false,
       sandbox         : false,
-      // Dev : chargé depuis http://localhost → webSecurity bloque blob:/data: URLs pour médias
-      // Prod : chargé depuis file:// → pas de restriction, webSecurity: true OK
-      webSecurity     : process.env.NODE_ENV !== 'development',
+      webSecurity     : true,
     },
     show         : false,
     titleBarStyle: 'hidden',
   });
 
-  // Dev → Vite dev server | Prod → fichier buildé
-  if (process.env.NODE_ENV === 'development') {
-    mainWindow.loadURL('http://localhost:5173');
-  } else {
-    mainWindow.loadFile(path.join(__dirname, '../../dist/renderer/index.html'));
-  }
+  // Toujours depuis file:// (identique V1) — plus de webSecurity issues
+  mainWindow.loadFile(path.join(__dirname, '../../dist/renderer/index.html'));
 
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
