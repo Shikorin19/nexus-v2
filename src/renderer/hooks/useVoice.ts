@@ -2,9 +2,9 @@
  * NEXUS — useVoice
  *
  * STT : VAD (V1 exact) → Groq Whisper
- * TTS : new Audio(blobUrl).play() — SANS Web Audio API
- *       (createMediaElementSource coupe le playback sur pages HTTP)
- *       Amplitude simulée pour les visuels cluster.
+ * TTS : Web Audio API — decodeAudioData + createBufferSource
+ *       Pas de <audio> element, pas de blob/data URL → zéro URL safety check
+ *       Amplitude réelle via AnalyserNode
  */
 
 import { useState, useRef, useEffect, useCallback } from 'react';
@@ -42,61 +42,66 @@ export function useVoice() {
   const { setAmplitude, setClusterState } = useClusterStore();
 
   // ── Mic / VAD ────────────────────────────────────────────────────────────
-  const streamRef           = useRef<MediaStream | null>(null);
-  const recorderRef         = useRef<MediaRecorder | null>(null);
-  const chunksRef           = useRef<Blob[]>([]);
-  const vadCtxRef           = useRef<AudioContext | null>(null);
-  const vadRafRef           = useRef<number>(0);
-  const vadSpeechDetectedRef = useRef(false);  // V1 : vadSpeechDetected
-  const vadLastSpeechRef    = useRef<number>(0);
-  const vadActiveRef        = useRef(false);
-  const shouldTranscribeRef = useRef(false);
-  const onTranscribeRef     = useRef<((text: string) => void) | null>(null);
+  const streamRef            = useRef<MediaStream | null>(null);
+  const recorderRef          = useRef<MediaRecorder | null>(null);
+  const chunksRef            = useRef<Blob[]>([]);
+  const vadCtxRef            = useRef<AudioContext | null>(null);
+  const vadRafRef            = useRef<number>(0);
+  const vadSpeechDetectedRef = useRef(false);
+  const vadLastSpeechRef     = useRef<number>(0);
+  const vadActiveRef         = useRef(false);
+  const shouldTranscribeRef  = useRef(false);
+  const onTranscribeRef      = useRef<((text: string) => void) | null>(null);
 
-  // ── TTS ──────────────────────────────────────────────────────────────────
-  const audioElRef    = useRef<HTMLAudioElement | null>(null);
-  const blobUrlRef    = useRef<string | null>(null);
-  const ampTimerRef   = useRef<ReturnType<typeof setInterval> | null>(null);
+  // ── TTS (Web Audio API) ──────────────────────────────────────────────────
+  const ttsCtxRef     = useRef<AudioContext | null>(null);
+  const ttsSourceRef  = useRef<AudioBufferSourceNode | null>(null);
+  const ttsAmpRef     = useRef<AnalyserNode | null>(null);
+  const ampRafRef     = useRef<number>(0);
   const stoppedRef    = useRef(false);
   const resolveTTSRef = useRef<(() => void) | null>(null);
 
   // ─────────────────────────────────────────────────────────────────────────
   // TTS — _cleanupTTS
-  // Null l'élément EN PREMIER pour éviter la récursion via onended/onerror
   // ─────────────────────────────────────────────────────────────────────────
 
   function _cleanupTTS() {
-    if (ampTimerRef.current) { clearInterval(ampTimerRef.current); ampTimerRef.current = null; }
+    cancelAnimationFrame(ampRafRef.current);
     setAmplitude(0);
     setIsSpeaking(false);
 
-    if (audioElRef.current) {
-      const el = audioElRef.current;
-      audioElRef.current = null;  // null AVANT tout pour éviter re-entrée
-      el.onended = null;
-      el.onerror = null;
-      el.pause();
-      el.src = '';
+    if (ttsSourceRef.current) {
+      const src = ttsSourceRef.current;
+      ttsSourceRef.current = null;
+      src.onended = null;
+      try { src.stop(); } catch {}
+      src.disconnect();
     }
-    if (blobUrlRef.current) {
-      URL.revokeObjectURL(blobUrlRef.current);
-      blobUrlRef.current = null;
+    ttsAmpRef.current = null;
+
+    if (ttsCtxRef.current) {
+      const ctx = ttsCtxRef.current;
+      ttsCtxRef.current = null;
+      ctx.close().catch(() => {});
     }
   }
 
   // ─────────────────────────────────────────────────────────────────────────
   // TTS — speak
-  // Lecture directe new Audio(blobUrl).play() — pas de Web Audio API
+  // Web Audio API : decodeAudioData → createBufferSource → destination
+  // Pas de <audio>, pas d'URL → contourne complètement le URL safety check
   // ─────────────────────────────────────────────────────────────────────────
 
   const speak = useCallback(async (text: string): Promise<void> => {
     if (!text.trim()) return;
 
+    // Stop tout ce qui joue déjà
     stoppedRef.current = true;
     window.nexus?.voice.stop();
     _cleanupTTS();
     stoppedRef.current = false;
 
+    // Appel IPC → msedge-tts
     let result: TTSResult | undefined;
     try { result = await window.nexus?.voice.speak(text); }
     catch (e) { rlog('TTS IPC error: ' + String(e)); return; }
@@ -106,59 +111,82 @@ export function useVoice() {
       return;
     }
 
-    rlog('TTS: audio reçu len=' + result.audio.length + ' stopped=' + stoppedRef.current);
+    rlog('TTS: audio reçu len=' + result.audio.length);
 
-    // Blob URL (webSecurity: false en dev lève le blocage URL safety check)
+    // base64 → ArrayBuffer
     const bin = atob(result.audio);
-    const buf = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
-    const blobUrl = URL.createObjectURL(new Blob([buf], { type: 'audio/mpeg' }));
-    blobUrlRef.current = blobUrl;
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
 
-    const el = new Audio(blobUrl);
-    audioElRef.current = el;
+    // Contexte Web Audio
+    const ctx = new AudioContext();
+    ttsCtxRef.current = ctx;
 
-    el.oncanplay  = () => rlog('TTS: canplay');
-    el.onplaying  = () => rlog('TTS: playing');
-    el.onpause    = () => rlog('TTS: pause t=' + el.currentTime.toFixed(2));
-    el.onended    = () => {
-      rlog('TTS: ended t=' + el.currentTime.toFixed(2));
+    // Resume si suspendu (autoplay policy)
+    if (ctx.state === 'suspended') {
+      try { await ctx.resume(); } catch {}
+    }
+
+    let audioBuffer: AudioBuffer;
+    try {
+      audioBuffer = await ctx.decodeAudioData(bytes.buffer.slice(0));
+    } catch (e) {
+      rlog('TTS: decodeAudioData error: ' + String(e));
       _cleanupTTS();
-      const cb = resolveTTSRef.current; resolveTTSRef.current = null; cb?.();
-    };
-    el.onerror    = () => {
-      rlog('TTS: onerror code=' + (el.error?.code ?? '?') + ' msg=' + (el.error?.message ?? '?'));
-      _cleanupTTS();
-      const cb = resolveTTSRef.current; resolveTTSRef.current = null; cb?.();
-    };
+      return;
+    }
+
+    if (stoppedRef.current) { _cleanupTTS(); return; }
+
+    rlog('TTS: decoded, duration=' + audioBuffer.duration.toFixed(2) + 's');
+
+    // Graphe audio : source → analyser → destination
+    const source   = ctx.createBufferSource();
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 256;
+    source.buffer = audioBuffer;
+    source.connect(analyser);
+    analyser.connect(ctx.destination);
+
+    ttsSourceRef.current = source;
+    ttsAmpRef.current    = analyser;
 
     setIsSpeaking(true);
-    ampTimerRef.current = setInterval(() => {
-      if (!stoppedRef.current) setAmplitude(0.3 + Math.random() * 0.45);
-    }, 120);
+
+    // Amplitude réelle via RAF
+    const freqData = new Uint8Array(analyser.frequencyBinCount);
+    function _ampLoop() {
+      if (!ttsSourceRef.current) return;
+      analyser.getByteFrequencyData(freqData);
+      let sum = 0;
+      for (let i = 0; i < freqData.length; i++) sum += freqData[i];
+      const amp = Math.min(1, (sum / freqData.length) / 40 + 0.15);
+      setAmplitude(amp);
+      ampRafRef.current = requestAnimationFrame(_ampLoop);
+    }
+    ampRafRef.current = requestAnimationFrame(_ampLoop);
 
     await new Promise<void>((resolve) => {
       resolveTTSRef.current = resolve;
-      el.play()
-        .then(() => rlog('TTS: play() resolved'))
-        .catch((e) => {
-          rlog('TTS: play() rejected: ' + String(e));
-          _cleanupTTS();
-          resolveTTSRef.current = null;
-          resolve();
-        });
+      source.onended = () => {
+        rlog('TTS: ended');
+        cancelAnimationFrame(ampRafRef.current);
+        _cleanupTTS();
+        const cb = resolveTTSRef.current; resolveTTSRef.current = null; cb?.();
+      };
+      source.start(0);
+      rlog('TTS: source.start() OK');
     });
   }, [setAmplitude]);
 
   // ─────────────────────────────────────────────────────────────────────────
-  // TTS — stopSpeaking (V1 TTSSpeaker.stop + _fire)
+  // TTS — stopSpeaking
   // ─────────────────────────────────────────────────────────────────────────
 
   const stopSpeaking = useCallback(() => {
     stoppedRef.current = true;
     window.nexus?.voice.stop();
     _cleanupTTS();
-    // _fire() → résout le Promise await dans speak() si interrompu
     const cb = resolveTTSRef.current;
     resolveTTSRef.current = null;
     cb?.();
@@ -175,10 +203,10 @@ export function useVoice() {
     analyser.fftSize = VAD_FFT_SIZE;
     source.connect(analyser);
 
-    vadCtxRef.current          = ctx;
-    vadActiveRef.current       = true;
-    vadSpeechDetectedRef.current = false;  // V1 : vadSpeechDetected = false
-    vadLastSpeechRef.current   = 0;
+    vadCtxRef.current            = ctx;
+    vadActiveRef.current         = true;
+    vadSpeechDetectedRef.current = false;
+    vadLastSpeechRef.current     = 0;
 
     const data = new Uint8Array(analyser.frequencyBinCount);
 
@@ -191,13 +219,12 @@ export function useVoice() {
       const avgVolume = sum / data.length;
 
       if (avgVolume > VAD_THRESHOLD) {
-        vadSpeechDetectedRef.current = true;  // V1 : vadSpeechDetected = true
+        vadSpeechDetectedRef.current = true;
         vadLastSpeechRef.current     = Date.now();
       } else if (
-        vadSpeechDetectedRef.current &&                              // V1 : && vadSpeechDetected
+        vadSpeechDetectedRef.current &&
         Date.now() - vadLastSpeechRef.current > SILENCE_MS
       ) {
-        // Silence suffisant après parole → arrêt + transcription
         _stopMic(true);
         return;
       }
@@ -247,7 +274,7 @@ export function useVoice() {
         else chunksRef.current = [];
       };
 
-      recorder.start();  // V1 : start() sans timeslice
+      recorder.start();
       _startVAD(stream);
       setIsListening(true);
       setClusterState('listening');
@@ -288,11 +315,11 @@ export function useVoice() {
       if (result?.text?.trim()) {
         cb(result.text.trim());
       } else {
-        console.warn('[STT] vide ou erreur:', result?.error);
+        rlog('[STT] vide ou erreur: ' + (result?.error ?? 'no text'));
         setClusterState('idle');
       }
     } catch (e) {
-      console.error('[STT] erreur:', e);
+      rlog('[STT] erreur: ' + String(e));
       setClusterState('idle');
     } finally {
       setIsTranscribing(false);
