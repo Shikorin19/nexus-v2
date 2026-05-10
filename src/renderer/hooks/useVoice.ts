@@ -2,9 +2,9 @@
  * NEXUS — useVoice
  *
  * STT : VAD (V1 exact) → Groq Whisper
- * TTS : Web Audio API — decodeAudioData + createBufferSource
- *       Pas de <audio> element, pas de blob/data URL → zéro URL safety check
- *       Amplitude réelle via AnalyserNode
+ * TTS : new Audio(fileUrl) — fichier temp écrit par le main process
+ *       file:// URL → zéro URL safety check
+ *       Amplitude via createMediaElementSource + AnalyserNode (V1 exact)
  */
 
 import { useState, useRef, useEffect, useCallback } from 'react';
@@ -17,7 +17,11 @@ const VAD_THRESHOLD    = Math.round(30 - VAD_SENSITIVITY * 25); // = 10
 const SILENCE_MS       = 1200;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-interface TTSResult { audio: string; words: { word: string; timeMs: number }[]; }
+interface TTSResult {
+  audio   : string;
+  fileUrl ?: string;
+  words   : { word: string; timeMs: number }[];
+}
 
 declare const window: Window & typeof globalThis & {
   nexus?: {
@@ -53,10 +57,9 @@ export function useVoice() {
   const shouldTranscribeRef  = useRef(false);
   const onTranscribeRef      = useRef<((text: string) => void) | null>(null);
 
-  // ── TTS (Web Audio API) ──────────────────────────────────────────────────
+  // ── TTS ──────────────────────────────────────────────────────────────────
+  const audioElRef    = useRef<HTMLAudioElement | null>(null);
   const ttsCtxRef     = useRef<AudioContext | null>(null);
-  const ttsSourceRef  = useRef<AudioBufferSourceNode | null>(null);
-  const ttsAmpRef     = useRef<AnalyserNode | null>(null);
   const ampRafRef     = useRef<number>(0);
   const stoppedRef    = useRef(false);
   const resolveTTSRef = useRef<(() => void) | null>(null);
@@ -70,14 +73,14 @@ export function useVoice() {
     setAmplitude(0);
     setIsSpeaking(false);
 
-    if (ttsSourceRef.current) {
-      const src = ttsSourceRef.current;
-      ttsSourceRef.current = null;
-      src.onended = null;
-      try { src.stop(); } catch {}
-      src.disconnect();
+    if (audioElRef.current) {
+      const el = audioElRef.current;
+      audioElRef.current = null;   // null EN PREMIER pour éviter re-entrée
+      el.onended = null;
+      el.onerror = null;
+      el.pause();
+      el.src = '';
     }
-    ttsAmpRef.current = null;
 
     if (ttsCtxRef.current) {
       const ctx = ttsCtxRef.current;
@@ -88,94 +91,90 @@ export function useVoice() {
 
   // ─────────────────────────────────────────────────────────────────────────
   // TTS — speak
-  // Web Audio API : decodeAudioData → createBufferSource → destination
-  // Pas de <audio>, pas d'URL → contourne complètement le URL safety check
+  // new Audio(file:// URL) + createMediaElementSource pour amplitude (V1)
   // ─────────────────────────────────────────────────────────────────────────
 
   const speak = useCallback(async (text: string): Promise<void> => {
     if (!text.trim()) return;
 
-    // Stop tout ce qui joue déjà
     stoppedRef.current = true;
     window.nexus?.voice.stop();
     _cleanupTTS();
     stoppedRef.current = false;
 
-    // Appel IPC → msedge-tts
     let result: TTSResult | undefined;
     try { result = await window.nexus?.voice.speak(text); }
     catch (e) { rlog('TTS IPC error: ' + String(e)); return; }
 
-    if (!result?.audio || stoppedRef.current) {
-      rlog('TTS: pas de données audio ou stopped');
+    if (!result?.fileUrl || stoppedRef.current) {
+      rlog('TTS: pas de fileUrl ou stopped. fileUrl=' + result?.fileUrl);
       return;
     }
 
-    rlog('TTS: audio reçu len=' + result.audio.length);
+    rlog('TTS: fileUrl=' + result.fileUrl);
 
-    // base64 → ArrayBuffer
-    const bin = atob(result.audio);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const el = new Audio(result.fileUrl);
+    audioElRef.current = el;
 
-    // Contexte Web Audio
-    const ctx = new AudioContext();
-    ttsCtxRef.current = ctx;
-
-    // Resume si suspendu (autoplay policy)
-    if (ctx.state === 'suspended') {
-      try { await ctx.resume(); } catch {}
-    }
-
-    let audioBuffer: AudioBuffer;
+    // Web Audio pour amplitude (V1 exact : createMediaElementSource)
     try {
-      audioBuffer = await ctx.decodeAudioData(bytes.buffer.slice(0));
+      const ctx      = new AudioContext();
+      ttsCtxRef.current = ctx;
+      const source   = ctx.createMediaElementSource(el);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      analyser.connect(ctx.destination);
+      await ctx.resume();
+
+      const timeDomainData = new Uint8Array(analyser.fftSize);
+      function _ampLoop() {
+        if (!audioElRef.current) return;
+        analyser.getByteTimeDomainData(timeDomainData);
+        let sum = 0;
+        for (let i = 0; i < timeDomainData.length; i++) {
+          const v = (timeDomainData[i] - 128) / 128;
+          sum += v * v;
+        }
+        setAmplitude(Math.min(1, Math.sqrt(sum / timeDomainData.length) * 6 + 0.1));
+        ampRafRef.current = requestAnimationFrame(_ampLoop);
+      }
+      ampRafRef.current = requestAnimationFrame(_ampLoop);
+      rlog('TTS: Web Audio analyser OK');
     } catch (e) {
-      rlog('TTS: decodeAudioData error: ' + String(e));
-      _cleanupTTS();
-      return;
+      rlog('TTS: Web Audio setup failed (amplitude simulée): ' + String(e));
+      // Fallback amplitude simulée si Web Audio échoue
+      ampRafRef.current = setInterval(() => {
+        if (audioElRef.current) setAmplitude(0.3 + Math.random() * 0.45);
+      }, 120) as unknown as number;
     }
 
-    if (stoppedRef.current) { _cleanupTTS(); return; }
-
-    rlog('TTS: decoded, duration=' + audioBuffer.duration.toFixed(2) + 's');
-
-    // Graphe audio : source → analyser → destination
-    const source   = ctx.createBufferSource();
-    const analyser = ctx.createAnalyser();
-    analyser.fftSize = 256;
-    source.buffer = audioBuffer;
-    source.connect(analyser);
-    analyser.connect(ctx.destination);
-
-    ttsSourceRef.current = source;
-    ttsAmpRef.current    = analyser;
+    el.oncanplay = () => rlog('TTS: canplay');
+    el.onplaying = () => { rlog('TTS: playing'); setIsSpeaking(true); };
+    el.onpause   = () => rlog('TTS: pause t=' + el.currentTime.toFixed(2));
+    el.onended   = () => {
+      rlog('TTS: ended t=' + el.currentTime.toFixed(2));
+      _cleanupTTS();
+      const cb = resolveTTSRef.current; resolveTTSRef.current = null; cb?.();
+    };
+    el.onerror   = () => {
+      rlog('TTS: onerror code=' + (el.error?.code ?? '?') + ' msg=' + (el.error?.message ?? '?'));
+      _cleanupTTS();
+      const cb = resolveTTSRef.current; resolveTTSRef.current = null; cb?.();
+    };
 
     setIsSpeaking(true);
 
-    // Amplitude réelle via RAF
-    const freqData = new Uint8Array(analyser.frequencyBinCount);
-    function _ampLoop() {
-      if (!ttsSourceRef.current) return;
-      analyser.getByteFrequencyData(freqData);
-      let sum = 0;
-      for (let i = 0; i < freqData.length; i++) sum += freqData[i];
-      const amp = Math.min(1, (sum / freqData.length) / 40 + 0.15);
-      setAmplitude(amp);
-      ampRafRef.current = requestAnimationFrame(_ampLoop);
-    }
-    ampRafRef.current = requestAnimationFrame(_ampLoop);
-
     await new Promise<void>((resolve) => {
       resolveTTSRef.current = resolve;
-      source.onended = () => {
-        rlog('TTS: ended');
-        cancelAnimationFrame(ampRafRef.current);
-        _cleanupTTS();
-        const cb = resolveTTSRef.current; resolveTTSRef.current = null; cb?.();
-      };
-      source.start(0);
-      rlog('TTS: source.start() OK');
+      el.play()
+        .then(() => rlog('TTS: play() OK'))
+        .catch((e) => {
+          rlog('TTS: play() rejected: ' + String(e));
+          _cleanupTTS();
+          resolveTTSRef.current = null;
+          resolve();
+        });
     });
   }, [setAmplitude]);
 

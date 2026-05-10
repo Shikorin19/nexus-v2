@@ -40,7 +40,17 @@ function setupIpcHandlers(win) {
     try {
       const result = await speak(text, { rate, volume });
       console.log('[TTS] audio généré, base64 length:', result?.audio?.length ?? 0);
-      return result;
+
+      // Écriture en fichier temp → file:// URL pour le renderer
+      // (blob:/data: URLs bloqués par Electron URL safety check même en file://)
+      const fs   = require('fs');
+      const os   = require('os');
+      const tempPath = path.join(os.tmpdir(), 'nexus_tts.mp3');
+      fs.writeFileSync(tempPath, Buffer.from(result.audio, 'base64'));
+      const fileUrl = 'file:///' + tempPath.replace(/\\/g, '/');
+      console.log('[TTS] temp file →', tempPath);
+
+      return { ...result, fileUrl };
     } catch (err) {
       console.error('[TTS] erreur:', err.message);
       return null;
