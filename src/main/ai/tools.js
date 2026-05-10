@@ -98,23 +98,6 @@ async function executeTool(toolName, args) {
         return { success: true, message: 'Capture d\'écran prise', path: result };
       }
 
-      case 'web_search': {
-        const { webSearch } = require('../integrations/brave-search');
-        // Fallback process.env si la clé n'est pas encore dans electron-store
-        // process.env en priorité — electron-store en fallback
-        const apiKey = process.env.BRAVE_SEARCH_API_KEY
-          || process.env.BRAVE_API_KEY
-          || store.get('braveSearchKey', '');
-        const result = await webSearch(args.query, apiKey, args.count || 5);
-        if (result.error) return { success: false, error: result.error };
-        return {
-          success: true,
-          query: result.query,
-          results: result.results,
-          summary: result.results.map((r, i) => `${i + 1}. **${r.title}**\n${r.description}\n${r.url}`).join('\n\n'),
-        };
-      }
-
       case 'notion_search': {
         const { searchPages } = require('../integrations/notion');
         const token = store.get('notionToken', '');

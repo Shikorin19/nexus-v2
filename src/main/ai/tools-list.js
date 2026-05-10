@@ -103,18 +103,6 @@ function getTools() {
       input_schema: { type: 'object', properties: {} },
     },
     {
-      name: 'web_search',
-      description: "Rechercher sur le web avec Brave Search. Utilise cet outil pour des informations récentes, des actualités, ou toute question nécessitant internet.",
-      input_schema: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: 'Requête de recherche' },
-          count: { type: 'number', description: 'Nombre de résultats (1-10, défaut 5)' },
-        },
-        required: ['query'],
-      },
-    },
-    {
       name: 'notion_search',
       description: 'Rechercher des pages dans Notion',
       input_schema: {
