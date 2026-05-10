@@ -108,10 +108,14 @@ export function useVoice() {
 
     rlog('TTS: audio reçu len=' + result.audio.length + ' stopped=' + stoppedRef.current);
 
-    // Data URL directe — évite tous les problèmes de blob URL / CORS
-    const dataUrl = `data:audio/mpeg;base64,${result.audio}`;
+    // Blob URL (webSecurity: false en dev lève le blocage URL safety check)
+    const bin = atob(result.audio);
+    const buf = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+    const blobUrl = URL.createObjectURL(new Blob([buf], { type: 'audio/mpeg' }));
+    blobUrlRef.current = blobUrl;
 
-    const el = new Audio();
+    const el = new Audio(blobUrl);
     audioElRef.current = el;
 
     el.oncanplay  = () => rlog('TTS: canplay');
@@ -127,9 +131,6 @@ export function useVoice() {
       _cleanupTTS();
       const cb = resolveTTSRef.current; resolveTTSRef.current = null; cb?.();
     };
-
-    el.src = dataUrl;
-    el.load();
 
     setIsSpeaking(true);
     ampTimerRef.current = setInterval(() => {

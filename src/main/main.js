@@ -39,7 +39,9 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration : false,
       sandbox         : false,
-      webSecurity     : true,
+      // Dev : chargé depuis http://localhost → webSecurity bloque blob:/data: URLs pour médias
+      // Prod : chargé depuis file:// → pas de restriction, webSecurity: true OK
+      webSecurity     : process.env.NODE_ENV !== 'development',
     },
     show         : false,
     titleBarStyle: 'hidden',
