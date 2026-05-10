@@ -355,12 +355,14 @@ export const ChatOverlay: FC = () => {
   const [isThinking, setIsThinking] = useState(false);
   const [showAI,     setShowAI]     = useState(false);
 
-  // Historique local session (comme state.messages en V1)
-  const messagesRef  = useRef<ChatMsg[]>([]);
-  const isTypingRef  = useRef(false);   // guard double-send (V1 équivalent)
-  const currentMsgRef = useRef('');
-  const hideTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const voiceModeRef  = useRef(false);  // true = requête vient de la voix
+  // Historique texte (chargé depuis DB, contexte chat)
+  const messagesRef     = useRef<ChatMsg[]>([]);
+  // Historique voix SÉPARÉ (session seulement, identique V1 _homeMicHistory)
+  // Évite la pollution par les anciens messages DB lors des requêtes vocales
+  const voiceHistoryRef = useRef<ChatMsg[]>([]);
+  const isTypingRef     = useRef(false);
+  const currentMsgRef   = useRef('');
+  const hideTimerRef    = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const { setClusterState }                                        = useClusterStore();
   const { isListening, isSpeaking, isTranscribing, startListening,
@@ -390,16 +392,24 @@ export const ChatOverlay: FC = () => {
     if (!text || isTypingRef.current) return;
 
     isTypingRef.current = true;
-    voiceModeRef.current = !!overrideText;
+    const isVoice = !!overrideText;
 
     // 1. Message flottant utilisateur
     const msgId = crypto.randomUUID();
     currentMsgRef.current = msgId;
     setUserMsgs(prev => [...prev, { id: msgId, text }]);
-    if (!overrideText) setInput('');
+    if (!isVoice) setInput('');
 
-    // 2. Historique local
-    messagesRef.current.push({ role: 'user', content: text });
+    // 2. Historique :
+    //    - voix → voiceHistoryRef (session, identique V1 _homeMicHistory)
+    //    - texte → messagesRef (DB chargé)
+    if (isVoice) {
+      voiceHistoryRef.current.push({ role: 'user', content: text });
+      if (voiceHistoryRef.current.length > 20)
+        voiceHistoryRef.current.splice(0, voiceHistoryRef.current.length - 20);
+    } else {
+      messagesRef.current.push({ role: 'user', content: text });
+    }
 
     // 3. Persist
     try {
@@ -413,8 +423,10 @@ export const ChatOverlay: FC = () => {
     setAiText('');
     if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
 
-    // 5. Context window 10 (identique V1)
-    const recentMessages = messagesRef.current.slice(-10);
+    // 5. Context window 10 — voix = historique session propre, texte = DB
+    const recentMessages = isVoice
+      ? voiceHistoryRef.current.slice(-10)
+      : messagesRef.current.slice(-10);
 
     try {
       // ── APPEL IDENTIQUE À V1 ────────────────────────────────────────────
@@ -428,14 +440,21 @@ export const ChatOverlay: FC = () => {
       const content = response.content || '';
       setAiText(content);
 
-      messagesRef.current.push({ role: 'assistant', content });
+      // Historique réponse
+      if (isVoice) {
+        voiceHistoryRef.current.push({ role: 'assistant', content });
+        if (voiceHistoryRef.current.length > 20)
+          voiceHistoryRef.current.splice(0, voiceHistoryRef.current.length - 20);
+      } else {
+        messagesRef.current.push({ role: 'assistant', content });
+      }
       try {
         await window.nexus?.chat.saveMessage({
           role: 'assistant', content, model: response.model,
         });
       } catch {}
 
-      if (overrideText) {
+      if (isVoice) {
         // ── Mode voix : TTS puis idle ──────────────────────────────────────
         await speak(content);           // bloque jusqu'à fin TTS
         setClusterState('idle');
