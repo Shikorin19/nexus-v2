@@ -103,6 +103,17 @@ function getTools() {
       input_schema: { type: 'object', properties: {} },
     },
     {
+      name: 'web_search',
+      description: "Rechercher sur le web pour des infos récentes, actualités, faits actuels. Utilise quand la question concerne des événements après 2024.",
+      input_schema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Requête de recherche en français ou anglais' },
+        },
+        required: ['query'],
+      },
+    },
+    {
       name: 'notion_search',
       description: 'Rechercher des pages dans Notion',
       input_schema: {
