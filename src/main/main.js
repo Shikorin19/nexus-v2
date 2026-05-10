@@ -2,6 +2,10 @@
 try { require('dotenv').config(); } catch (_) {}
 
 const { app, BrowserWindow, ipcMain, shell, globalShortcut } = require('electron');
+
+// Désactive la politique autoplay Chrome — nécessaire en dev (HTTP origin)
+// V1 n'avait pas ce problème car chargé depuis file://
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 const path = require('path');
 
 let mainWindow = null;

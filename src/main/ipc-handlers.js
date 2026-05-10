@@ -32,22 +32,34 @@ function setupIpcHandlers(win) {
 
   // === TTS ===
   ipcMain.handle('tts-speak', async (event, { text, rate, volume }) => {
+    console.log('[TTS] tts-speak →', text?.substring(0, 60));
     const { speak } = require('./voice/tts');
-    return await speak(text, { rate, volume });
+    try {
+      const result = await speak(text, { rate, volume });
+      console.log('[TTS] audio généré, base64 length:', result?.audio?.length ?? 0);
+      return result;
+    } catch (err) {
+      console.error('[TTS] erreur:', err.message);
+      return null;
+    }
   });
 
   ipcMain.on('tts-stop', () => {
+    console.log('[TTS] stop');
     const { stopSpeaking } = require('./voice/tts');
     stopSpeaking();
   });
 
   // === STT (Groq Whisper) ===
   ipcMain.handle('stt-transcribe', async (event, audioBuffer) => {
+    console.log('[STT] stt-transcribe, buffer size:', audioBuffer?.byteLength ?? 0);
     const Store = require('electron-store');
     const store = new Store();
-    const apiKey = store.get('groqApiKey', '');
+    const apiKey = store.get('groqApiKey', '') || process.env.GROQ_API_KEY || '';
     const { transcribeAudio } = require('./voice/stt');
-    return await transcribeAudio(audioBuffer, apiKey);
+    const result = await transcribeAudio(audioBuffer, apiKey);
+    console.log('[STT] résultat:', result?.text || result?.error);
+    return result;
   });
 
   // === PC Control ===
