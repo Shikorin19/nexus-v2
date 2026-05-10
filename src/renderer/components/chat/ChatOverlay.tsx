@@ -1,10 +1,11 @@
 /**
  * NEXUS — ChatOverlay
  *
- * Logique IA identique à V1 (index.html sendMessage) :
- *   window.nexus.ai.chat(messages)  →  { content, model, isLocal, toolsUsed }
+ * Pipeline texte  : input → window.nexus.ai.chat() → affichage mot par mot
+ * Pipeline voix   : Mic → VAD → STT → ai.chat() → TTS → cluster speaking
  *
- * Pas de streaming — appel simple invoke comme en V1.
+ * Logique IA identique à V1 (sendMessage).
+ * Voix identique à V1 (startListening / TTSSpeaker).
  */
 
 import {
@@ -14,8 +15,9 @@ import {
 import { motion, AnimatePresence } from 'framer-motion';
 import { Mic, MicOff, ArrowUp, Loader2 } from 'lucide-react';
 
-import { useClusterStore } from '../cluster/useClusterStore';
-import { easing }          from '../../theme';
+import { useClusterStore }  from '../cluster/useClusterStore';
+import { useVoice }         from '../../hooks/useVoice';
+import { easing }           from '../../theme';
 
 // ─── window.nexus (Electron preload) ─────────────────────────────────────────
 
@@ -27,6 +29,11 @@ declare const window: Window & typeof globalThis & {
     chat: {
       getHistory  : (limit: number) => Promise<DBMsg[]>;
       saveMessage : (msg: { role: string; content: string; model?: string }) => Promise<unknown>;
+    };
+    voice: {
+      speak     : (text: string, opts?: object) => Promise<{ audio: string; words: { word: string; timeMs: number }[] }>;
+      stop      : () => void;
+      transcribe: (buf: ArrayBuffer) => Promise<{ text?: string; error?: string }>;
     };
   };
 };
@@ -44,7 +51,7 @@ const STAR_BLUE   = '#4da6ff';
 const CYAN        = '#00d4ff';
 const EASE_SMOOTH = easing.smooth;
 
-// ─── Hook — révélation mot par mot (pour la réponse complète reçue) ───────────
+// ─── Hook — révélation mot par mot ────────────────────────────────────────────
 
 function useWordReveal(text: string, wordsPerSec = 5) {
   const [count, setCount] = useState(0);
@@ -115,7 +122,7 @@ const UserMessageZone: FC<{ messages: UserMsg[]; onDismiss: (id: string) => void
   </div>
 );
 
-// ─── Réponse IA (thinking + mot par mot) ──────────────────────────────────────
+// ─── Réponse IA ───────────────────────────────────────────────────────────────
 
 const AIResponseDisplay: FC<{ text: string; isVisible: boolean; isThinking: boolean }> = ({
   text, isVisible, isThinking,
@@ -180,14 +187,81 @@ const AIResponseDisplay: FC<{ text: string; isVisible: boolean; isThinking: bool
   );
 };
 
+// ─── Indicateur voix (listening / transcribing) ───────────────────────────────
+
+const VoiceIndicator: FC<{ isListening: boolean; isTranscribing: boolean }> = ({
+  isListening, isTranscribing,
+}) => (
+  <AnimatePresence>
+    {(isListening || isTranscribing) && (
+      <motion.div
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: 8 }}
+        transition={{ duration: 0.25 }}
+        style={{
+          position: 'absolute', bottom: '96px', left: '64px', right: '0',
+          display: 'flex', justifyContent: 'center',
+          pointerEvents: 'none',
+        }}
+      >
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: '8px',
+          padding: '6px 14px',
+          background: 'rgba(0,212,255,0.06)',
+          border: '1px solid rgba(0,212,255,0.18)',
+          borderRadius: '20px',
+          backdropFilter: 'blur(12px)',
+        }}>
+          {isTranscribing ? (
+            <>
+              <Loader2 size={12} strokeWidth={1.5}
+                style={{ color: CYAN, animation: 'spin 1s linear infinite' }} />
+              <span style={{ fontSize: '11px', letterSpacing: '0.12em',
+                color: 'rgba(0,212,255,0.7)', fontWeight: 400 }}>
+                TRANSCRIPTION…
+              </span>
+            </>
+          ) : (
+            <>
+              {/* Orbes pulsantes */}
+              {[0, 0.15, 0.3].map((delay, i) => (
+                <motion.div key={i}
+                  animate={{ scale: [1, 1.5, 1], opacity: [0.6, 1, 0.6] }}
+                  transition={{ duration: 0.8, repeat: Infinity, delay }}
+                  style={{
+                    width: 5, height: 5, borderRadius: '50%',
+                    background: CYAN,
+                    boxShadow: `0 0 6px ${CYAN}`,
+                  }}
+                />
+              ))}
+              <span style={{ fontSize: '11px', letterSpacing: '0.12em',
+                color: 'rgba(0,212,255,0.7)', fontWeight: 400 }}>
+                ÉCOUTE
+              </span>
+            </>
+          )}
+        </div>
+      </motion.div>
+    )}
+  </AnimatePresence>
+);
+
 // ─── Barre de saisie ──────────────────────────────────────────────────────────
 
 const InputBar: FC<{
-  value: string; isListening: boolean; isDisabled: boolean;
-  onChange: (v: string) => void; onSend: () => void; onMicToggle: () => void;
-}> = ({ value, isListening, isDisabled, onChange, onSend, onMicToggle }) => {
+  value: string;
+  isListening: boolean;
+  isSpeaking : boolean;
+  isDisabled : boolean;
+  onChange    : (v: string) => void;
+  onSend      : () => void;
+  onMicToggle : () => void;
+}> = ({ value, isListening, isSpeaking, isDisabled, onChange, onSend, onMicToggle }) => {
   const [focused, setFocused] = useState(false);
   const hasContent = value.trim().length > 0;
+  const micActive  = isListening || isSpeaking;
 
   const handleKey = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && !e.shiftKey && hasContent) { e.preventDefault(); onSend(); }
@@ -213,7 +287,7 @@ const InputBar: FC<{
     >
       <input
         type="text" value={value} disabled={isDisabled}
-        placeholder="Parlez à NEXUS…"
+        placeholder={isListening ? 'Écoute en cours…' : isSpeaking ? 'NEXUS parle…' : 'Parlez à NEXUS…'}
         onChange={(e: ChangeEvent<HTMLInputElement>) => onChange(e.target.value)}
         onKeyDown={handleKey}
         onFocus={() => setFocused(true)}
@@ -225,24 +299,30 @@ const InputBar: FC<{
         }}
       />
 
-      <motion.button onClick={onMicToggle} whileHover={{ scale: 1.08 }} whileTap={{ scale: 0.94 }}
+      {/* Bouton micro — cyan si actif (écoute ou TTS), s'arrête au clic */}
+      <motion.button
+        onClick={onMicToggle}
+        whileHover={{ scale: 1.08 }}
+        whileTap={{ scale: 0.94 }}
         animate={{
-          color: isListening ? CYAN : 'rgba(120,155,184,0.5)',
-          filter: isListening ? 'drop-shadow(0 0 6px rgba(0,212,255,0.7))' : 'none',
+          color : micActive ? CYAN : 'rgba(120,155,184,0.5)',
+          filter: micActive ? 'drop-shadow(0 0 6px rgba(0,212,255,0.7))' : 'none',
         }}
         transition={{ duration: 0.18 }}
         style={{
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           width: '36px', height: '36px', borderRadius: '50%',
-          background: isListening ? 'rgba(0,212,255,0.10)' : 'transparent',
+          background: micActive ? 'rgba(0,212,255,0.10)' : 'transparent',
           border: 'none', cursor: 'pointer', flexShrink: 0,
           transition: 'background 0.2s ease', pointerEvents: 'auto',
         }}
       >
-        {isListening ? <MicOff size={18} strokeWidth={1.5} /> : <Mic size={18} strokeWidth={1.5} />}
+        {micActive ? <MicOff size={18} strokeWidth={1.5} /> : <Mic size={18} strokeWidth={1.5} />}
       </motion.button>
 
-      <motion.button onClick={onSend} disabled={!hasContent || isDisabled}
+      <motion.button
+        onClick={onSend}
+        disabled={!hasContent || isDisabled}
         whileHover={hasContent && !isDisabled ? { scale: 1.06 } : {}}
         whileTap={hasContent && !isDisabled ? { scale: 0.94 } : {}}
         animate={{
@@ -266,24 +346,27 @@ const InputBar: FC<{
   );
 };
 
-// ─── ChatOverlay — logique identique à V1 sendMessage() ──────────────────────
+// ─── ChatOverlay ──────────────────────────────────────────────────────────────
 
 export const ChatOverlay: FC = () => {
-  const [input,       setInput]       = useState('');
-  const [isListening, setIsListening] = useState(false);
-  const [userMsgs,    setUserMsgs]    = useState<UserMsg[]>([]);
-  const [aiText,      setAiText]      = useState('');
-  const [isThinking,  setIsThinking]  = useState(false);
-  const [showAI,      setShowAI]      = useState(false);
+  const [input,      setInput]      = useState('');
+  const [userMsgs,   setUserMsgs]   = useState<UserMsg[]>([]);
+  const [aiText,     setAiText]     = useState('');
+  const [isThinking, setIsThinking] = useState(false);
+  const [showAI,     setShowAI]     = useState(false);
+
   // Historique local session (comme state.messages en V1)
-  const messagesRef = useRef<ChatMsg[]>([]);
-
-  const { setClusterState } = useClusterStore();
-  const hideTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const isTypingRef   = useRef(false);   // équivalent de state.isTyping en V1
+  const messagesRef  = useRef<ChatMsg[]>([]);
+  const isTypingRef  = useRef(false);   // guard double-send (V1 équivalent)
   const currentMsgRef = useRef('');
+  const hideTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const voiceModeRef  = useRef(false);  // true = requête vient de la voix
 
-  // ── Chargement historique au mount (comme V1 chargeait depuis DB) ─────────
+  const { setClusterState }                                        = useClusterStore();
+  const { isListening, isSpeaking, isTranscribing, startListening,
+          stopListening, speak, stopSpeaking }                     = useVoice();
+
+  // ── Chargement historique au mount ────────────────────────────────────────
   useEffect(() => {
     (async () => {
       try {
@@ -294,75 +377,83 @@ export const ChatOverlay: FC = () => {
             .reverse()
             .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
         }
-      } catch { /* DB non disponible en dev sans Electron */ }
+      } catch { /* DB non disponible hors Electron */ }
     })();
-
     return () => { if (hideTimerRef.current) clearTimeout(hideTimerRef.current); };
   }, []);
 
-  // ── sendMessage — copie exacte de la logique V1 ───────────────────────────
-  const handleSend = useCallback(async () => {
-    const text = input.trim();
-    if (!text || isTypingRef.current) return;       // guard identique à V1
+  // ─────────────────────────────────────────────────────────────────────────
+  // handleSend — cœur V1, accepte texte override (voix) ou input (texte)
+  // ─────────────────────────────────────────────────────────────────────────
+  const handleSend = useCallback(async (overrideText?: string) => {
+    const text = (overrideText ?? input).trim();
+    if (!text || isTypingRef.current) return;
+
+    isTypingRef.current = true;
+    voiceModeRef.current = !!overrideText;
 
     // 1. Message flottant utilisateur
     const msgId = crypto.randomUUID();
     currentMsgRef.current = msgId;
     setUserMsgs(prev => [...prev, { id: msgId, text }]);
-    setInput('');
+    if (!overrideText) setInput('');
 
-    // 2. Ajout dans l'historique local (comme addMessage('user') en V1)
+    // 2. Historique local
     messagesRef.current.push({ role: 'user', content: text });
 
-    // 3. Persist (comme en V1)
-    try { await window.nexus?.chat.saveMessage({ role: 'user', content: text }); } catch {}
+    // 3. Persist
+    try {
+      await window.nexus?.chat.saveMessage({ role: 'user', content: text });
+    } catch {}
 
-    // 4. Cluster thinking + UI
-    isTypingRef.current = true;
+    // 4. Cluster thinking
     setClusterState('thinking');
     setIsThinking(true);
     setShowAI(true);
     setAiText('');
     if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
 
-    // 5. Context window 10 messages (identique à V1)
+    // 5. Context window 10 (identique V1)
     const recentMessages = messagesRef.current.slice(-10);
 
     try {
-      // ── APPEL IDENTIQUE À V1 ──────────────────────────────────────────────
+      // ── APPEL IDENTIQUE À V1 ────────────────────────────────────────────
       const response = await window.nexus!.ai.chat(recentMessages);
-      // ─────────────────────────────────────────────────────────────────────
+      // ────────────────────────────────────────────────────────────────────
 
-      // 6. Cluster speaking + affichage réponse
       setIsThinking(false);
       setClusterState('speaking');
-
-      // Retire le message flottant utilisateur (comme en V1 après réponse)
       setUserMsgs(prev => prev.filter(m => m.id !== currentMsgRef.current));
 
       const content = response.content || '';
       setAiText(content);
 
-      // 7. Ajout dans l'historique local
       messagesRef.current.push({ role: 'assistant', content });
-
-      // 8. Persist réponse assistant (comme en V1)
       try {
         await window.nexus?.chat.saveMessage({
           role: 'assistant', content, model: response.model,
         });
       } catch {}
 
-      // 9. Retour idle après lecture (~7s)
-      hideTimerRef.current = setTimeout(() => {
+      if (overrideText) {
+        // ── Mode voix : TTS puis idle ──────────────────────────────────────
+        await speak(content);           // bloque jusqu'à fin TTS
         setClusterState('idle');
         setShowAI(false);
         setAiText('');
         isTypingRef.current = false;
-      }, 7000);
+
+      } else {
+        // ── Mode texte : auto-hide 7s ──────────────────────────────────────
+        hideTimerRef.current = setTimeout(() => {
+          setClusterState('idle');
+          setShowAI(false);
+          setAiText('');
+          isTypingRef.current = false;
+        }, 7000);
+      }
 
     } catch (e: unknown) {
-      // Identique au catch de V1
       const msg = e instanceof Error ? e.message : String(e);
       setIsThinking(false);
       setClusterState('speaking');
@@ -375,20 +466,41 @@ export const ChatOverlay: FC = () => {
         isTypingRef.current = false;
       }, 6000);
     }
-  }, [input, setClusterState]);
+  }, [input, setClusterState, speak]);
 
-  // ── Toggle micro ───────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
+  // Mic toggle — démarre écoute ou stop
+  // ─────────────────────────────────────────────────────────────────────────
   const handleMicToggle = useCallback(() => {
-    setIsListening(prev => {
-      const next = !prev;
-      setClusterState(next ? 'listening' : 'idle');
-      return next;
+    if (isListening || isTranscribing) {
+      // Arrêt manuel de l'écoute
+      stopListening();
+      return;
+    }
+
+    if (isSpeaking) {
+      // Interruption TTS (barge-in)
+      stopSpeaking();
+      setClusterState('idle');
+      setShowAI(false);
+      setAiText('');
+      isTypingRef.current = false;
+      return;
+    }
+
+    // Démarrage écoute : callback appelé par VAD → STT
+    startListening((transcribedText) => {
+      handleSend(transcribedText);
     });
-  }, [setClusterState]);
+  }, [isListening, isTranscribing, isSpeaking,
+      startListening, stopListening, stopSpeaking,
+      setClusterState, handleSend]);
 
   const handleDismiss = useCallback((id: string) => {
     setUserMsgs(prev => prev.filter(m => m.id !== id));
   }, []);
+
+  const isDisabled = isThinking || isTranscribing;
 
   return (
     <div
@@ -399,6 +511,8 @@ export const ChatOverlay: FC = () => {
 
       <AIResponseDisplay text={aiText} isVisible={showAI} isThinking={isThinking} />
 
+      <VoiceIndicator isListening={isListening} isTranscribing={isTranscribing} />
+
       <div style={{
         position: 'absolute', bottom: '28px', left: '64px', right: '0',
         display: 'flex', justifyContent: 'center', padding: '0 24px',
@@ -407,9 +521,10 @@ export const ChatOverlay: FC = () => {
         <InputBar
           value={input}
           isListening={isListening}
-          isDisabled={isThinking}
+          isSpeaking={isSpeaking}
+          isDisabled={isDisabled}
           onChange={setInput}
-          onSend={handleSend}
+          onSend={() => handleSend()}
           onMicToggle={handleMicToggle}
         />
       </div>
