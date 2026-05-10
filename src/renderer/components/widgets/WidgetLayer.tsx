@@ -15,6 +15,7 @@
  */
 
 import { useEffect, useReducer } from 'react';
+import { motion } from 'framer-motion';
 
 import { WeatherWidget }       from './WeatherWidget';
 import { SystemStatsWidget }   from './SystemStatsWidget';
@@ -86,7 +87,9 @@ const INIT: Positions = computeDefaultPositions(1400, 900);
 
 // ─── Composant ────────────────────────────────────────────────────────────────
 
-export function WidgetLayer() {
+const EASE: [number, number, number, number] = [0.65, 0, 0.35, 1];
+
+export function WidgetLayer({ visible = true }: { visible?: boolean }) {
   const [positions, dispatch] = useReducer(positionsReducer, INIT);
 
   // Recalcule au mount selon la vraie taille de fenêtre
@@ -108,7 +111,12 @@ export function WidgetLayer() {
   });
 
   return (
-    <div
+    <motion.div
+      animate={{
+        opacity      : visible ? 1 : 0,
+        pointerEvents: visible ? 'none' : 'none',
+      }}
+      transition={{ duration: 0.40, ease: EASE }}
       style={{
         position     : 'fixed',
         inset        : '0',
@@ -127,6 +135,6 @@ export function WidgetLayer() {
       <TasksWidget         {...wp('tasks')}  animDelay={D(4)} />
       <MemoryWidget        {...wp('memory')} animDelay={D(5)} />
       <NotificationsWidget {...wp('notifs')} animDelay={D(6)} />
-    </div>
+    </motion.div>
   );
 }
